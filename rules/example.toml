@@ -1,0 +1,23 @@
+# benchpeek rule file. Load it from the app, or pass it on the CLI later.
+# Each [[rule]] watches one signal's latest value. `severity` is "warn" or
+# "fault" (default "fault"). `min`/`max` are both optional.
+
+[[rule]]
+signal = "VBAT"
+min = 11.5
+max = 15.0
+severity = "fault"
+message = "Battery voltage out of range - check charging system / battery health"
+
+[[rule]]
+signal = "TEMP"
+max = 85.0
+severity = "warn"
+message = "Temperature high - check cooling / airflow"
+
+[[rule]]
+signal = "RPM"
+min = 150.0
+max = 6000.0
+severity = "warn"
+message = "RPM implausible - sensor or wiring fault"

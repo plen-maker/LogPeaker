@@ -1,0 +1,13 @@
+[package]
+name = "benchpeek-wasm-host"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+benchpeek-plugin = { path = "../benchpeek-plugin" }
+anyhow = "1"
+wasmtime = { version = "48.0.1", features = ["component-model"] }
+
+[dev-dependencies]
+ascii-kv = { path = "../../plugins/ascii-kv" }

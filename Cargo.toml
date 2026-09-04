@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/benchpeek-core",
+    "crates/benchpeek-plugin",
+    "crates/benchpeek-wasm-host",
+    "crates/benchpeek-app",
+    "plugins/ascii-kv",
+    "plugins/ascii-kv-wasm",
+]
+
+# ascii-kv-wasm only builds for wasm32-unknown-unknown (its generated
+# export symbols don't link on the host target) — build it explicitly via
+# scripts/build-plugin.sh, keep it out of the default `cargo build`/`test`.
+default-members = [
+    "crates/benchpeek-core",
+    "crates/benchpeek-plugin",
+    "crates/benchpeek-wasm-host",
+    "crates/benchpeek-app",
+    "plugins/ascii-kv",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"

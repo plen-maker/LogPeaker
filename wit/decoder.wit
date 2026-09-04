@@ -1,0 +1,35 @@
+package benchpeek:decoder@0.1.0;
+
+/// Shared data types passed across the plugin boundary.
+interface types {
+    record signal-meta {
+        name: string,
+        unit: option<string>,
+        min: option<f64>,
+        max: option<f64>,
+    }
+
+    record sample {
+        signal: string,
+        value: f64,
+        t: f64,
+    }
+}
+
+/// A decoder turns a raw byte stream into samples. Mirrors the
+/// `benchpeek_plugin::Decoder` Rust trait one-to-one, so the host can treat
+/// a compiled-in decoder and a loaded component the same way.
+interface decoder {
+    use types.{signal-meta, sample};
+
+    resource decoder {
+        constructor();
+        name: func() -> string;
+        signals: func() -> list<signal-meta>;
+        decode: func(bytes: list<u8>, t: f64) -> list<sample>;
+    }
+}
+
+world decoder-plugin {
+    export decoder;
+}

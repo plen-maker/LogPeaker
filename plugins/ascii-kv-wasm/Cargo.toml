@@ -1,0 +1,13 @@
+[package]
+name = "ascii-kv-wasm"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ascii-kv = { path = "../ascii-kv" }
+benchpeek-plugin = { path = "../../crates/benchpeek-plugin" }
+wit-bindgen = "0.61.1"

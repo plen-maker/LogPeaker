@@ -1,0 +1,5 @@
+/target
+*.jsonl
+# in case a plugin crate is ever built standalone (outside the workspace)
+plugins/*/target/
+plugins/*/Cargo.lock

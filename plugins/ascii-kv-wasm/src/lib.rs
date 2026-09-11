@@ -25,7 +25,8 @@ impl Guest for Component {
 }
 
 impl GuestDecoder for AsciiKvResource {
-    fn new() -> Self {
+    fn new(_config: Option<String>) -> Self {
+        // ascii-kv has nothing to configure: KEY=VALUE parsing is fixed.
         Self {
             inner: RefCell::new(ascii_kv::AsciiKv::new()),
         }

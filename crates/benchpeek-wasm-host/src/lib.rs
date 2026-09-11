@@ -27,16 +27,25 @@ pub struct WasmDecoder {
 
 impl WasmDecoder {
     /// Load and instantiate a `.wasm` component file, then construct its
-    /// exported `decoder` resource. `name()`/`signals()` are cached here
-    /// since the `Decoder` trait exposes them without store access.
+    /// exported `decoder` resource with no config. `name()`/`signals()` are
+    /// cached here since the `Decoder` trait exposes them without store
+    /// access.
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        Self::load_inner(path.as_ref()).map_err(|e| anyhow::anyhow!("{e:#}"))
+        Self::load_with_config(path, None)
     }
 
-    fn load_inner(path: &Path) -> wasmtime::Result<Self> {
-        let mut config = Config::new();
-        config.wasm_component_model(true);
-        let engine = Engine::new(&config)?;
+    /// Same as [`Self::load`], but passes `config` to the constructor -
+    /// e.g. a DBC file's contents for a decoder that otherwise falls back
+    /// to some baked-in default. Opaque to the host; a decoder with
+    /// nothing to configure just ignores it.
+    pub fn load_with_config(path: impl AsRef<Path>, config: Option<&str>) -> anyhow::Result<Self> {
+        Self::load_inner(path.as_ref(), config).map_err(|e| anyhow::anyhow!("{e:#}"))
+    }
+
+    fn load_inner(path: &Path, config: Option<&str>) -> wasmtime::Result<Self> {
+        let mut wasm_config = Config::new();
+        wasm_config.wasm_component_model(true);
+        let engine = Engine::new(&wasm_config)?;
 
         let component = Component::from_file(&engine, path)
             .with_context(|| format!("loading component {}", path.display()))?;
@@ -47,7 +56,7 @@ impl WasmDecoder {
 
         let decoder = bindings.benchpeek_decoder_decoder().decoder();
         let resource = decoder
-            .call_constructor(&mut store)
+            .call_constructor(&mut store, config)
             .context("calling decoder constructor")?;
         let name = decoder
             .call_name(&mut store, resource)

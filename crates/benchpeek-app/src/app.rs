@@ -56,6 +56,10 @@ pub struct BenchpeekApp {
     // Decoder config.
     decoder_kind: DecoderKind,
     plugin_path: String,
+    /// Optional file whose contents are passed to the WASM plugin's
+    /// constructor as `config` (e.g. a `.dbc` for `can-dbc-py`); empty
+    /// means "no config".
+    plugin_config_path: String,
 
     // Source config.
     port: String,
@@ -136,6 +140,7 @@ impl Default for BenchpeekApp {
             source: None,
             decoder_kind: DecoderKind::Builtin,
             plugin_path: "target/plugins/ascii-kv.wasm".to_string(),
+            plugin_config_path: String::new(),
             port: String::new(),
             baud: 115_200,
             replay_path: "session.jsonl".to_string(),
@@ -332,9 +337,22 @@ impl BenchpeekApp {
     fn make_decoder(&self) -> anyhow::Result<Box<dyn Decoder>> {
         match self.decoder_kind {
             DecoderKind::Builtin => Ok(Box::new(ascii_kv::AsciiKv::new())),
-            DecoderKind::WasmPlugin => Ok(Box::new(benchpeek_wasm_host::WasmDecoder::load(
-                &self.plugin_path,
-            )?)),
+            DecoderKind::WasmPlugin => {
+                // The component has no filesystem access, so the host
+                // reads its config file (e.g. a .dbc) and hands the
+                // contents through - see wit/decoder.wit's constructor.
+                let config = if self.plugin_config_path.is_empty() {
+                    None
+                } else {
+                    Some(std::fs::read_to_string(&self.plugin_config_path)?)
+                };
+                Ok(Box::new(
+                    benchpeek_wasm_host::WasmDecoder::load_with_config(
+                        &self.plugin_path,
+                        config.as_deref(),
+                    )?,
+                ))
+            }
             DecoderKind::CanRaw => Ok(Box::new(can_raw::CanRaw::new())),
         }
     }
@@ -759,6 +777,18 @@ impl BenchpeekApp {
             );
             ui.text_edit_singleline(&mut self.plugin_path);
         });
+        ui.horizontal(|ui| {
+            ui.add_space(18.0);
+            ui.label("Config");
+            ui.text_edit_singleline(&mut self.plugin_config_path);
+        });
+        ui.label(
+            RichText::new(
+                "Optional file passed to the plugin's constructor, e.g. a .dbc for can-dbc-py.",
+            )
+            .weak()
+            .small(),
+        );
         ui.radio_value(
             &mut self.decoder_kind,
             DecoderKind::CanRaw,

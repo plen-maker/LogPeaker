@@ -59,6 +59,39 @@ fn ignores_frames_for_unknown_ids() {
     assert!(out.is_empty());
 }
 
+/// The host, not the component, owns reading an arbitrary `.dbc` file
+/// (components built with `--stub-wasi` have no filesystem access) and
+/// passes its text through as the constructor's `config` - this is what
+/// lets `can-dbc-py` decode a real vehicle's DBC instead of only its
+/// baked-in worked example, without a rebuild.
+#[test]
+fn accepts_a_custom_dbc_via_runtime_config() {
+    let path = plugin_path();
+    assert!(path.exists(), "missing {path:?}");
+
+    let custom_dbc = r#"
+BO_ 512 TELEMETRY: 8 ECU
+ SG_ SPEED : 0|16@1+ (0.5,0) [0|1000] "km/h" ECU
+"#;
+    let mut wasm = WasmDecoder::load_with_config(&path, Some(custom_dbc))
+        .expect("load can-dbc-py component with custom config");
+
+    let signals = wasm.signals();
+    assert_eq!(signals.len(), 1);
+    assert_eq!(signals[0].name, "SPEED");
+    assert_eq!(signals[0].unit.as_deref(), Some("km/h"));
+
+    // The default embedded VBAT/RPM/TEMP frame must decode to nothing here
+    // - proof this really replaced the baked-in DBC rather than merging
+    // with it.
+    assert!(wasm.decode(test_frame_line(), 0.0).is_empty());
+
+    let out = wasm.decode(b"200#6400000000000000\n", 1.0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].signal, "SPEED");
+    assert_eq!(out[0].value, 50.0);
+}
+
 #[test]
 fn buffers_partial_lines_across_calls() {
     let path = plugin_path();

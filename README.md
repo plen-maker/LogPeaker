@@ -49,7 +49,11 @@ selected — so it exercises the WASM plugin path too, not just the built-in one
 ## Plugins (WASM components)
 
 A decoder plugin implements the `decoder` resource in [`wit/decoder.wit`](wit/decoder.wit):
-`constructor`, `name`, `signals`, `decode`. Build one with:
+`constructor`, `name`, `signals`, `decode`. `constructor` takes an optional
+`config` string - opaque to the host, which just reads a file (see
+**Config** below DECODER in the app) and passes its contents through, since
+a sandboxed component has no filesystem access of its own. A decoder with
+nothing to configure ignores it. Build one with:
 
 ```sh
 scripts/build-plugin.sh <crate-name> [output-name]
@@ -73,14 +77,15 @@ The plugin boundary isn't Rust-only: `plugins/can-dbc-py` is the same
 `decoder` resource written in Python and shipped as a component with
 [`componentize-py`](https://github.com/bytecodealliance/componentize-py)
 (`pip install componentize-py`, then `scripts/build-can-dbc-py.sh` →
-`target/plugins/can-dbc-py.wasm`) — no changes to `benchpeek-wasm-host` or
-`wit/decoder.wit` were needed to load it, since the component model boundary
-doesn't care what produced the component. It embeds a small worked-example
-DBC and does real per-signal bit extraction (Intel and Motorola byte order,
-signed and unsigned) — see the CAN section below. `-s`/`--stub-wasi` in the
-build script isn't optional: `benchpeek-wasm-host`'s `Linker` registers no
-WASI imports, so the component must be fully self-contained, same
-constraint that keeps `ascii-kv-wasm` on `wasm32-unknown-unknown`.
+`target/plugins/can-dbc-py.wasm`) — the component model boundary doesn't
+care what produced the component, so loading it needed no Python-specific
+code in `benchpeek-wasm-host`. It does real per-signal bit extraction
+(Intel and Motorola byte order, signed and unsigned) against a DBC passed
+in as `config` (falling back to a small worked-example DBC when none is
+given) — see the CAN section below. `-s`/`--stub-wasi` in the build script
+isn't optional: `benchpeek-wasm-host`'s `Linker` registers no WASI imports,
+so the component must be fully self-contained, same constraint that keeps
+`ascii-kv-wasm` on `wasm32-unknown-unknown`.
 
 ## CAN (SocketCAN)
 
@@ -98,10 +103,10 @@ could parse CAN frames too, with no plugin ABI changes. Select **CAN raw**
 under DECODER for the reference decoder: it emits one undecoded signal per
 CAN ID (`can_<id hex>`, the frame's bytes packed little-endian into a
 number). For real per-signal decoding, load `plugins/can-dbc-py`'s
-component as a **WASM plugin** instead (see above) - it parses its embedded
-DBC's `VBAT`/`RPM`/`TEMP` signals out of CAN ID `0x301` with correct units
-and healthy ranges. A loader for an arbitrary `.dbc` file supplied at
-runtime (rather than baked in at build time) is still on the roadmap below.
+component as a **WASM plugin** instead (see above), with **Config** pointed
+at any `.dbc` file - it parses that DBC's signals out at runtime, with
+correct units and healthy ranges; point it at nothing and it falls back to
+its worked example (`VBAT`/`RPM`/`TEMP` out of CAN ID `0x301`).
 
 ## Rules
 
@@ -172,10 +177,6 @@ runs net name -> signal name instead of net geometry -> plot pixel.
 ## Roadmap
 
 - Plugin SDK docs
-- A DBC loader that reads an arbitrary `.dbc` file supplied at runtime,
-  instead of `can-dbc-py`'s worked example baked in at build time - needs a
-  way to pass config into a plugin's `constructor()`, which the WIT ABI
-  doesn't support yet
 - USB transport beyond USB-serial (raw bulk/interrupt endpoints for a
   non-CDC device) - Serial already covers USB-CDC boards, CAN is covered
   above

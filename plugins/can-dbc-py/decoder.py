@@ -8,12 +8,13 @@
 # `benchpeek-app`'s CAN source emits (see `source.rs::can_frame_line`), the
 # same as every other decoder.
 #
-# The embedded DBC below is a worked example, not a loader for an arbitrary
-# .dbc file: the `decoder` resource's constructor takes no arguments (see
-# wit/decoder.wit) and this component has no filesystem access (built with
-# `--stub-wasi` to match the host's no-WASI linker, see
-# scripts/build-can-dbc-py.sh), so a real deployment would bake its own
-# vehicle's DBC in here at build time, the same way this one does.
+# The `decoder` resource's constructor takes an optional `config` string
+# (see wit/decoder.wit) - the host reads a .dbc file itself (this component
+# has no filesystem access; built with `--stub-wasi` to match the host's
+# no-WASI linker, see scripts/build-can-dbc-py.sh) and passes its contents
+# through as `config`, so any DBC file can be loaded at runtime without a
+# rebuild. DBC_TEXT below is only the fallback when no config is given -
+# the worked example against `sequences/example.toml`/`kicad/example.net`.
 #
 # Supports the two DBC byte orders (`@1` Intel/little-endian, `@0`
 # Motorola/big-endian) and signed/unsigned signals; does not support
@@ -113,9 +114,9 @@ def extract_raw(data, sig):
 
 
 class Decoder:
-    def __init__(self):
+    def __init__(self, config):
         self.buf = bytearray()
-        self.messages = parse_dbc(DBC_TEXT)
+        self.messages = parse_dbc(config if config else DBC_TEXT)
 
     def name(self):
         return "can-dbc-py"

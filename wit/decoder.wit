@@ -23,7 +23,9 @@ interface decoder {
     use types.{signal-meta, sample};
 
     resource decoder {
-        constructor();
+        /// `config` is opaque to the host - e.g. a DBC file's contents for
+        /// a DBC decoder. A decoder with nothing to configure ignores it.
+        constructor(config: option<string>);
         name: func() -> string;
         signals: func() -> list<signal-meta>;
         decode: func(bytes: list<u8>, t: f64) -> list<sample>;

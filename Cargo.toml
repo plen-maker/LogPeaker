@@ -7,6 +7,7 @@ members = [
     "crates/benchpeek-app",
     "plugins/ascii-kv",
     "plugins/ascii-kv-wasm",
+    "plugins/can-raw",
 ]
 
 # ascii-kv-wasm only builds for wasm32-unknown-unknown (its generated
@@ -18,6 +19,7 @@ default-members = [
     "crates/benchpeek-wasm-host",
     "crates/benchpeek-app",
     "plugins/ascii-kv",
+    "plugins/can-raw",
 ]
 
 [workspace.package]

@@ -13,9 +13,11 @@ benchpeek-core = { path = "../benchpeek-core" }
 benchpeek-plugin = { path = "../benchpeek-plugin" }
 benchpeek-wasm-host = { path = "../benchpeek-wasm-host" }
 ascii-kv = { path = "../../plugins/ascii-kv" }
+can-raw = { path = "../../plugins/can-raw" }
 anyhow = "1"
 fastrand = "2"
 serialport = "4"
 eframe = "0.36.1"
 egui = "0.36.1"
 egui_plot = "0.37.0"
+socketcan = { version = "4.0.0", features = ["enumerate"] }

@@ -24,6 +24,9 @@ enum DecoderKind {
     Builtin,
     /// A `benchpeek:decoder` component loaded from disk at start-time.
     WasmPlugin,
+    /// `can-raw`, compiled straight into the app: one undecoded signal per
+    /// CAN ID, for the CAN source below.
+    CanRaw,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -57,6 +60,8 @@ pub struct BenchpeekApp {
     baud: u32,
     replay_path: String,
     ports: Vec<String>,
+    can_iface: String,
+    can_ifaces: Vec<String>,
 
     // Auto mode: watch for a serial port appearing and connect to it.
     auto_mode: bool,
@@ -120,6 +125,8 @@ impl Default for BenchpeekApp {
             baud: 115_200,
             replay_path: "session.jsonl".to_string(),
             ports: list_ports(),
+            can_iface: String::new(),
+            can_ifaces: list_can_interfaces(),
             auto_mode: false,
             auto_last_scan: Instant::now(),
             active_port: None,
@@ -211,6 +218,10 @@ fn list_usb_ports() -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn list_can_interfaces() -> Vec<String> {
+    socketcan::available_interfaces().unwrap_or_default()
+}
+
 fn health_color(h: Health) -> Color32 {
     match h {
         Health::Ok => theme::OK,
@@ -285,6 +296,7 @@ impl BenchpeekApp {
             DecoderKind::WasmPlugin => Ok(Box::new(benchpeek_wasm_host::WasmDecoder::load(
                 &self.plugin_path,
             )?)),
+            DecoderKind::CanRaw => Ok(Box::new(can_raw::CanRaw::new())),
         }
     }
 
@@ -305,6 +317,7 @@ impl BenchpeekApp {
         let source_label = match &kind {
             SourceKind::Simulated => "simulated board".to_string(),
             SourceKind::Serial { port, baud } => format!("serial {port} @ {baud}"),
+            SourceKind::Can { interface } => format!("can {interface}"),
             SourceKind::Replay { path } => format!("replay {path}"),
         };
         self.source = Some(source::spawn(kind, decoder));
@@ -663,6 +676,11 @@ impl BenchpeekApp {
             );
             ui.text_edit_singleline(&mut self.plugin_path);
         });
+        ui.radio_value(
+            &mut self.decoder_kind,
+            DecoderKind::CanRaw,
+            "CAN raw (undecoded, one signal per ID)",
+        );
         ui.label(
             RichText::new("Takes effect on the next Start/Open/Replay below.")
                 .weak()
@@ -710,6 +728,31 @@ impl BenchpeekApp {
             self.start(SourceKind::Serial {
                 port: self.port.clone(),
                 baud: self.baud,
+            });
+        }
+
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label("CAN if");
+            let ifaces = self.can_ifaces.clone();
+            egui::ComboBox::from_id_salt("can_iface")
+                .selected_text(if self.can_iface.is_empty() {
+                    "-".to_string()
+                } else {
+                    self.can_iface.clone()
+                })
+                .show_ui(ui, |ui| {
+                    for i in ifaces {
+                        ui.selectable_value(&mut self.can_iface, i.clone(), i);
+                    }
+                });
+            if ui.small_button("scan").clicked() {
+                self.can_ifaces = list_can_interfaces();
+            }
+        });
+        if ui.button("Open CAN").clicked() && !self.can_iface.is_empty() {
+            self.start(SourceKind::Can {
+                interface: self.can_iface.clone(),
             });
         }
 

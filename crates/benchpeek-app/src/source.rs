@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use benchpeek_core::{classify_line, load_replay, Decoder, LogEvent, Sample};
+use socketcan::{CanSocket, EmbeddedFrame, Frame, ShouldRetry, Socket};
 
 pub enum SourceKind {
     /// A fake board: three plausible signals with a battery fault injected
@@ -20,6 +21,12 @@ pub enum SourceKind {
     Serial {
         port: String,
         baud: u32,
+    },
+    /// A SocketCAN interface (`can0`, `vcan0`, ...); frames are rendered as
+    /// `candump`-style ASCII lines and run through the same [`Decoder`]
+    /// every other source uses (see `can_frame_line`).
+    Can {
+        interface: String,
     },
     Replay {
         path: String,
@@ -59,6 +66,9 @@ pub fn spawn(kind: SourceKind, mut decoder: Box<dyn Decoder>) -> SourceHandle {
             SourceKind::Simulated => run_sim(decoder.as_mut(), &tx, &stop_thread, start),
             SourceKind::Serial { port, baud } => {
                 run_serial(&port, baud, decoder.as_mut(), &tx, &stop_thread, start)
+            }
+            SourceKind::Can { interface } => {
+                run_can(&interface, decoder.as_mut(), &tx, &stop_thread, start)
             }
             SourceKind::Replay { path } => run_replay(&path, &tx, &stop_thread),
         };
@@ -157,6 +167,64 @@ fn serial_session(
         }
     }
     Ok(())
+}
+
+/// A CAN interface can come up after benchpeek starts (`ip link set can0
+/// up` run separately, or a USB-CAN adapter plugged in later), so a failed
+/// open retries instead of giving up, same as the serial source.
+fn run_can(
+    interface: &str,
+    decoder: &mut dyn Decoder,
+    tx: &Sender<Sample>,
+    stop: &AtomicBool,
+    start: Instant,
+) -> Result<()> {
+    while !stop.load(Ordering::Relaxed) {
+        if let Err(e) = can_session(interface, decoder, tx, stop, start) {
+            eprintln!("benchpeek source: can {interface} error, reconnecting: {e:#}");
+            thread::sleep(Duration::from_millis(300));
+        }
+    }
+    Ok(())
+}
+
+fn can_session(
+    interface: &str,
+    decoder: &mut dyn Decoder,
+    tx: &Sender<Sample>,
+    stop: &AtomicBool,
+    start: Instant,
+) -> Result<()> {
+    let sock = CanSocket::open(interface).with_context(|| format!("opening {interface}"))?;
+    sock.set_read_timeout(Duration::from_millis(200))?;
+    while !stop.load(Ordering::Relaxed) {
+        match sock.read_frame() {
+            // Error/remote frames carry no signal data to forward.
+            Ok(frame) if frame.is_error_frame() || frame.is_remote_frame() => {}
+            Ok(frame) => {
+                let t = start.elapsed().as_secs_f64();
+                let line = can_frame_line(frame.raw_id(), frame.data());
+                for s in decoder.decode(line.as_bytes(), t) {
+                    let _ = tx.send(s);
+                }
+            }
+            Err(e) if e.should_retry() => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
+/// Renders one CAN frame as a `candump`-style ASCII line (`<id>#<hex
+/// data>`) so it flows through the same byte-stream [`Decoder`] every other
+/// source uses, instead of adding a second, frame-shaped decoding path.
+fn can_frame_line(id: u32, data: &[u8]) -> String {
+    let mut line = format!("{id:X}#");
+    for b in data {
+        line.push_str(&format!("{b:02X}"));
+    }
+    line.push('\n');
+    line
 }
 
 /// Owns the log-watch thread; stops it (and kills the underlying `ssh`) on
@@ -305,6 +373,12 @@ fn log_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn can_frame_line_is_candump_format() {
+        assert_eq!(can_frame_line(0x301, &[1, 2, 0xAB]), "301#0102AB\n");
+        assert_eq!(can_frame_line(0x18FEF100, &[]), "18FEF100#\n");
+    }
 
     /// 127.0.0.1 refuses batch-mode auth (no key set up for this bogus
     /// user) essentially immediately, so by the time we call `stop()` the

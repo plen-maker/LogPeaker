@@ -48,6 +48,10 @@ selected — so it exercises the WASM plugin path too, not just the built-in one
 
 ## Plugins (WASM components)
 
+Writing a decoder plugin? See [`docs/plugin-sdk.md`](docs/plugin-sdk.md)
+for the full contract and a worked recipe in both languages already in
+this repo. Short version below.
+
 A decoder plugin implements the `decoder` resource in [`wit/decoder.wit`](wit/decoder.wit):
 `constructor`, `name`, `signals`, `decode`. `constructor` takes an optional
 `config` string - opaque to the host, which just reads a file (see
@@ -176,7 +180,6 @@ runs net name -> signal name instead of net geometry -> plot pixel.
 
 ## Roadmap
 
-- Plugin SDK docs
 - USB transport beyond USB-serial (raw bulk/interrupt endpoints for a
   non-CDC device) - Serial already covers USB-CDC boards, CAN is covered
   above

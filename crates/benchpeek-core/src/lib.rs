@@ -243,6 +243,75 @@ impl Recorder {
     }
 }
 
+/// Severity of one log line, same three-level scale as [`Health`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLevel {
+    Info,
+    Warn,
+    Fault,
+}
+
+/// One line from a watched log stream (e.g. `journalctl -f` over SSH).
+#[derive(Debug, Clone)]
+pub struct LogEvent {
+    /// Seconds since the watch started.
+    pub t: f64,
+    pub level: LogLevel,
+    pub message: String,
+}
+
+/// Keyword-based severity classifier. Deliberately simple and
+/// format-agnostic (works on journalctl, dmesg, or a plain app log) rather
+/// than parsing any one log format's structured priority field.
+pub fn classify_line(line: &str) -> LogLevel {
+    let lower = line.to_lowercase();
+    let has_any = |needles: &[&str]| needles.iter().any(|n| lower.contains(n));
+    if has_any(&["error", "fail", "panic", "fatal", "crit", "segfault", "denied"]) {
+        LogLevel::Fault
+    } else if has_any(&["warn"]) {
+        LogLevel::Warn
+    } else {
+        LogLevel::Info
+    }
+}
+
+/// Rolling window of recent log lines.
+pub struct LogStore {
+    pub events: VecDeque<LogEvent>,
+    capacity: usize,
+}
+
+impl LogStore {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            events: VecDeque::with_capacity(capacity.min(1024)),
+            capacity,
+        }
+    }
+
+    pub fn push(&mut self, e: LogEvent) {
+        if self.events.len() == self.capacity {
+            self.events.pop_front();
+        }
+        self.events.push_back(e);
+    }
+
+    /// `(faults, warns)` currently held in the window.
+    pub fn counts(&self) -> (usize, usize) {
+        self.events.iter().fold((0, 0), |(f, w), e| match e.level {
+            LogLevel::Fault => (f + 1, w),
+            LogLevel::Warn => (f, w + 1),
+            LogLevel::Info => (f, w),
+        })
+    }
+}
+
+impl Default for LogStore {
+    fn default() -> Self {
+        Self::new(DEFAULT_CAPACITY)
+    }
+}
+
 /// Load a JSON-lines session file into memory, ordered as written.
 pub fn load_replay(path: impl AsRef<Path>) -> Result<Vec<Sample>> {
     let r = BufReader::new(File::open(path)?);

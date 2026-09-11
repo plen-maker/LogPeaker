@@ -5,7 +5,11 @@
 //! and shows a live plot plus a human-readable diagnosis panel.
 
 mod app;
+mod files;
+mod onboarding;
 mod source;
+mod theme;
+mod yocto;
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
@@ -17,6 +21,9 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "benchpeek",
         native_options,
-        Box::new(|_cc| Ok(Box::new(app::BenchpeekApp::default()))),
+        Box::new(|cc| {
+            theme::apply(&cc.egui_ctx);
+            Ok(Box::new(app::BenchpeekApp::default()))
+        }),
     )
 }

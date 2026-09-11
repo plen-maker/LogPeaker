@@ -2,18 +2,21 @@
 //! them, evaluates rules every frame, and renders the four panels
 //! (controls / signal table / plot / diagnosis).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 
 use benchpeek_core::{
-    evaluate, Diagnosis, Health, Recorder, Rule, RuleSet, SignalStore, DEFAULT_CAPACITY,
+    evaluate, Diagnosis, Health, LogLevel, LogStore, Recorder, Rule, RuleSet, SignalStore,
+    DEFAULT_CAPACITY,
 };
 use benchpeek_plugin::Decoder;
 use eframe::egui::{self, Color32, RichText};
-use egui_plot::{Legend, Line, Plot, PlotPoints};
+use egui_plot::{Legend, Line, LineStyle, Plot, PlotPoints};
 
-use crate::source::{self, SourceHandle, SourceKind};
+use crate::source::{self, LogWatcher, SourceHandle, SourceKind};
+use crate::theme;
+use crate::yocto::{self, DeviceStats, StatsWatcher};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DecoderKind {
@@ -21,6 +24,22 @@ enum DecoderKind {
     Builtin,
     /// A `benchpeek:decoder` component loaded from disk at start-time.
     WasmPlugin,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CentralView {
+    Plot,
+    Logs,
+    History,
+}
+
+/// Top-level app mode: live board diagnostics vs. the Yocto build
+/// dashboard. Different enough concerns (and different enough visual
+/// density) that they get separate layouts rather than sharing panels.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AppMode {
+    Diagnostics,
+    Yocto,
 }
 
 pub struct BenchpeekApp {
@@ -48,11 +67,44 @@ pub struct BenchpeekApp {
     record_path: String,
     recorder: Option<Recorder>,
 
+    // Log watch: independent of the signal source above.
+    log_store: LogStore,
+    log_watch: Option<LogWatcher>,
+    log_host: String,
+    log_user: String,
+    log_command: String,
+
+    // Diagnosis history: logs health transitions (not the live snapshot,
+    // which `diagnoses` already covers).
+    diag_history: VecDeque<DiagEvent>,
+    prev_health: HashMap<String, Health>,
+    app_start: Instant,
+
     // View state.
     window_secs: f64,
     visible: HashMap<String, bool>,
     paused: bool,
     status: String,
+    central_view: CentralView,
+    mode: AppMode,
+    welcome: crate::onboarding::Welcome,
+    files: crate::files::FilesPanel,
+    yocto_files: bool,
+    welcome_ports: Vec<String>,
+    welcome_scan: Instant,
+
+    // Yocto dashboard: build server connection + last-triggered build.
+    yocto_host: String,
+    yocto_user: String,
+    yocto_container: String,
+    yocto_workdir: String,
+    yocto_init_cmd: String,
+    yocto_target: String,
+    yocto_log_path: String,
+    stats_watch: Option<StatsWatcher>,
+    stats: DeviceStats,
+    build_log: Option<LogWatcher>,
+    build_log_store: LogStore,
 }
 
 impl Default for BenchpeekApp {
@@ -73,10 +125,37 @@ impl Default for BenchpeekApp {
             active_port: None,
             record_path: "session.jsonl".to_string(),
             recorder: None,
+            log_store: LogStore::new(4096),
+            log_watch: None,
+            log_host: String::new(),
+            log_user: "root".to_string(),
+            log_command: "journalctl -f -o cat".to_string(),
+            diag_history: VecDeque::new(),
+            prev_health: HashMap::new(),
+            app_start: Instant::now(),
             window_secs: 30.0,
             visible: HashMap::new(),
             paused: false,
             status: "idle".to_string(),
+            central_view: CentralView::Plot,
+            mode: AppMode::Diagnostics,
+            welcome: Default::default(),
+            files: Default::default(),
+            yocto_files: false,
+            welcome_ports: Vec::new(),
+            welcome_scan: Instant::now() - Duration::from_secs(2),
+            yocto_host: String::new(),
+            yocto_user: "yocto".to_string(),
+            yocto_container: "stm32mp2-builder".to_string(),
+            yocto_workdir: "/yocto-st/projects/stm32mp2-62".to_string(),
+            yocto_init_cmd: "source layers/openembedded-core/oe-init-build-env build-62"
+                .to_string(),
+            yocto_target: "st-image-weston".to_string(),
+            yocto_log_path: "/tmp/bitbake-build.log".to_string(),
+            stats_watch: None,
+            stats: DeviceStats::default(),
+            build_log: None,
+            build_log_store: LogStore::new(4096),
         }
     }
 }
@@ -134,10 +213,65 @@ fn list_usb_ports() -> Vec<String> {
 
 fn health_color(h: Health) -> Color32 {
     match h {
-        Health::Ok => Color32::from_rgb(120, 200, 120),
-        Health::Warn => Color32::from_rgb(232, 190, 90),
-        Health::Fault => Color32::from_rgb(232, 110, 110),
+        Health::Ok => theme::OK,
+        Health::Warn => theme::WARN,
+        Health::Fault => theme::FAULT,
     }
+}
+
+/// Color for a rule's own threshold guide line, based on its configured
+/// severity rather than any live value.
+fn rule_color(rule: &Rule) -> Color32 {
+    if rule.severity == "warn" {
+        theme::WARN
+    } else {
+        theme::FAULT
+    }
+}
+
+/// A labeled percentage bar for the Yocto dashboard's device-status card.
+/// Plain progress bars instead of circular gauges on purpose - the
+/// reference mockup this was modeled on was criticized as too busy;
+/// egui's built-in bar reads just as clearly with far less custom painting.
+fn stat_bar(ui: &mut egui::Ui, label: &str, pct: Option<f32>) {
+    ui.horizontal(|ui| {
+        ui.add_sized([50.0, 0.0], egui::Label::new(label));
+        match pct {
+            Some(p) => {
+                let color = if p >= 90.0 {
+                    theme::FAULT
+                } else if p >= 75.0 {
+                    theme::WARN
+                } else {
+                    theme::ACCENT
+                };
+                ui.add(
+                    egui::ProgressBar::new((p / 100.0).clamp(0.0, 1.0))
+                        .text(format!("{p:.0}%"))
+                        .fill(color),
+                );
+            }
+            None => {
+                ui.label(RichText::new("-").color(theme::WEAK_TEXT));
+            }
+        }
+    });
+}
+
+fn health_rank(h: Health) -> u8 {
+    match h {
+        Health::Ok => 0,
+        Health::Warn => 1,
+        Health::Fault => 2,
+    }
+}
+
+/// One health transition for a signal, kept for the History tab.
+struct DiagEvent {
+    t: f64,
+    signal: String,
+    health: Health,
+    message: String,
 }
 
 impl BenchpeekApp {
@@ -148,9 +282,9 @@ impl BenchpeekApp {
     fn make_decoder(&self) -> anyhow::Result<Box<dyn Decoder>> {
         match self.decoder_kind {
             DecoderKind::Builtin => Ok(Box::new(ascii_kv::AsciiKv::new())),
-            DecoderKind::WasmPlugin => {
-                Ok(Box::new(benchpeek_wasm_host::WasmDecoder::load(&self.plugin_path)?))
-            }
+            DecoderKind::WasmPlugin => Ok(Box::new(benchpeek_wasm_host::WasmDecoder::load(
+                &self.plugin_path,
+            )?)),
         }
     }
 
@@ -264,6 +398,242 @@ impl BenchpeekApp {
         }
     }
 
+    fn start_log_watch(&mut self) {
+        self.stop_log_watch();
+        self.log_watch = Some(source::spawn_log_watch(
+            self.log_host.clone(),
+            self.log_user.clone(),
+            self.log_command.clone(),
+        ));
+    }
+
+    fn stop_log_watch(&mut self) {
+        if let Some(mut w) = self.log_watch.take() {
+            w.stop();
+        }
+    }
+
+    /// Drain the log-watch channel into the log store, independently of
+    /// `pump()` - a log watch can be running with or without a signal
+    /// source active.
+    fn pump_logs(&mut self) {
+        let Some(watch) = &self.log_watch else { return };
+        loop {
+            match watch.rx.try_recv() {
+                Ok(e) => self.log_store.push(e),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+    }
+
+    /// Record health transitions (new fault/warn, escalation, or clearing)
+    /// into `diag_history`. `diagnoses` only ever holds *current* violations
+    /// (see `evaluate`), so anything missing from it this frame that was
+    /// present last frame has cleared.
+    fn track_diag_history(&mut self) {
+        let now = self.app_start.elapsed().as_secs_f64();
+
+        let mut current: HashMap<&str, (Health, &str)> = HashMap::new();
+        for d in &self.diagnoses {
+            let entry = current
+                .entry(d.signal.as_str())
+                .or_insert((d.health, d.message.as_str()));
+            if health_rank(d.health) > health_rank(entry.0) {
+                *entry = (d.health, d.message.as_str());
+            }
+        }
+
+        let mut events = Vec::new();
+        for (&signal, &(health, message)) in &current {
+            let prev = self.prev_health.get(signal).copied().unwrap_or(Health::Ok);
+            if health != prev {
+                events.push(DiagEvent {
+                    t: now,
+                    signal: signal.to_string(),
+                    health,
+                    message: message.to_string(),
+                });
+            }
+        }
+        let cleared: Vec<String> = self
+            .prev_health
+            .keys()
+            .filter(|s| !current.contains_key(s.as_str()))
+            .cloned()
+            .collect();
+        for signal in &cleared {
+            events.push(DiagEvent {
+                t: now,
+                signal: signal.clone(),
+                health: Health::Ok,
+                message: "back within range".to_string(),
+            });
+        }
+
+        for signal in cleared {
+            self.prev_health.remove(&signal);
+        }
+        for (&signal, &(health, _)) in &current {
+            self.prev_health.insert(signal.to_string(), health);
+        }
+
+        for e in events {
+            if self.diag_history.len() >= 500 {
+                self.diag_history.pop_front();
+            }
+            self.diag_history.push_back(e);
+        }
+    }
+
+    fn start_yocto_stats(&mut self) {
+        self.stop_yocto_stats();
+        if self.yocto_host.is_empty() {
+            return;
+        }
+        self.stats_watch = Some(yocto::spawn_stats_poll(
+            self.yocto_host.clone(),
+            self.yocto_user.clone(),
+            Duration::from_secs(5),
+        ));
+    }
+
+    fn stop_yocto_stats(&mut self) {
+        if let Some(mut w) = self.stats_watch.take() {
+            w.stop();
+        }
+        self.stats = DeviceStats::default();
+    }
+
+    fn pump_yocto_stats(&mut self) {
+        let Some(watch) = &self.stats_watch else {
+            return;
+        };
+        // Only the latest snapshot matters - drain to the last one.
+        while let Ok(s) = watch.rx.try_recv() {
+            self.stats = s;
+        }
+    }
+
+    /// The exact `docker exec -d ...` wrapper used manually against this
+    /// project earlier - init the build env, run bitbake, log the exit
+    /// code. Fire-and-forget: `start_build` doesn't wait for this to
+    /// return, it just kicks it off, then starts tailing the log file.
+    fn build_trigger_command(&self) -> String {
+        format!(
+            "docker exec -d -w {workdir} {container} bash -c \"{init} > /dev/null 2>&1; bitbake {target} > {log} 2>&1; echo __EXIT=\\$? >> {log}\"",
+            workdir = self.yocto_workdir,
+            container = self.yocto_container,
+            init = self.yocto_init_cmd,
+            target = self.yocto_target,
+            log = self.yocto_log_path,
+        )
+    }
+
+    fn start_build(&mut self) {
+        if self.yocto_host.is_empty() {
+            return;
+        }
+        yocto::run_remote_command(
+            self.yocto_host.clone(),
+            self.yocto_user.clone(),
+            self.build_trigger_command(),
+        );
+        self.start_build_log_watch();
+    }
+
+    fn start_build_log_watch(&mut self) {
+        self.stop_build_log_watch();
+        let tail_cmd = format!(
+            "docker exec {} tail -F {}",
+            self.yocto_container, self.yocto_log_path
+        );
+        self.build_log = Some(source::spawn_log_watch(
+            self.yocto_host.clone(),
+            self.yocto_user.clone(),
+            tail_cmd,
+        ));
+    }
+
+    fn stop_build_log_watch(&mut self) {
+        if let Some(mut w) = self.build_log.take() {
+            w.stop();
+        }
+    }
+
+    fn pump_build_log(&mut self) {
+        let Some(watch) = &self.build_log else { return };
+        loop {
+            match watch.rx.try_recv() {
+                Ok(e) => self.build_log_store.push(e),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+    }
+
+    /// Dot color for the top bar: reflects connection state, not signal
+    /// health - a live serial link with every value in range is still
+    /// worth showing as "connected", distinct from "idle".
+    fn connection_color(&self) -> Color32 {
+        if self.status.starts_with("running") {
+            theme::ACCENT
+        } else if self.status.starts_with("decoder error") || self.status.contains("error") {
+            theme::FAULT
+        } else if self.status.starts_with("auto:") {
+            theme::WARN
+        } else {
+            theme::IDLE
+        }
+    }
+
+    fn topbar_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.add_space(2.0);
+            let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
+            ui.painter()
+                .circle_filled(dot_rect.center(), 4.5, self.connection_color());
+            ui.add_space(4.0);
+            ui.label(RichText::new("benchpeek").strong().size(15.0));
+            ui.separator();
+            ui.selectable_value(&mut self.mode, AppMode::Diagnostics, "Diagnostics");
+            ui.selectable_value(&mut self.mode, AppMode::Yocto, "Yocto");
+            if ui.button("Connection guide").clicked() {
+                self.welcome.replay();
+            }
+            ui.separator();
+            ui.label(RichText::new(&self.status).color(theme::WEAK_TEXT));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (diag_faults, diag_warns) =
+                    self.diagnoses
+                        .iter()
+                        .fold((0, 0), |(f, w), d| match d.health {
+                            Health::Fault => (f + 1, w),
+                            Health::Warn => (f, w + 1),
+                            Health::Ok => (f, w),
+                        });
+                let (log_faults, log_warns) = self.log_store.counts();
+                let faults = diag_faults + log_faults;
+                let warns = diag_warns + log_warns;
+                if faults > 0 {
+                    ui.label(
+                        RichText::new(format!("{faults} FAULT"))
+                            .color(theme::FAULT)
+                            .strong(),
+                    );
+                } else if warns > 0 {
+                    ui.label(
+                        RichText::new(format!("{warns} WARN"))
+                            .color(theme::WARN)
+                            .strong(),
+                    );
+                } else {
+                    ui.label(RichText::new("all clear").color(theme::OK));
+                }
+            });
+        });
+    }
+
     fn health_of(&self, signal: &str) -> Health {
         let mut h = Health::Ok;
         for d in &self.diagnoses {
@@ -279,14 +649,18 @@ impl BenchpeekApp {
     }
 
     fn controls_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("benchpeek");
-        ui.label(RichText::new(&self.status).weak());
-        ui.separator();
-
         ui.label(RichText::new("DECODER").strong());
-        ui.radio_value(&mut self.decoder_kind, DecoderKind::Builtin, "Built-in (ascii-kv)");
+        ui.radio_value(
+            &mut self.decoder_kind,
+            DecoderKind::Builtin,
+            "Built-in (ascii-kv)",
+        );
         ui.horizontal(|ui| {
-            ui.radio_value(&mut self.decoder_kind, DecoderKind::WasmPlugin, "WASM plugin");
+            ui.radio_value(
+                &mut self.decoder_kind,
+                DecoderKind::WasmPlugin,
+                "WASM plugin",
+            );
             ui.text_edit_singleline(&mut self.plugin_path);
         });
         ui.label(
@@ -392,9 +766,251 @@ impl BenchpeekApp {
         }
 
         ui.separator();
+        ui.label(RichText::new("LOG WATCH").strong());
+        ui.label(
+            RichText::new("Tails a remote board's log over SSH (key-based auth). Independent of the SOURCE above - can run at the same time.")
+                .weak()
+                .small(),
+        );
+        ui.horizontal(|ui| {
+            ui.label("Host");
+            ui.text_edit_singleline(&mut self.log_host);
+        });
+        ui.horizontal(|ui| {
+            ui.label("User");
+            ui.text_edit_singleline(&mut self.log_user);
+        });
+        ui.horizontal(|ui| {
+            ui.label("Command");
+            ui.text_edit_singleline(&mut self.log_command);
+        });
+        let watching = self.log_watch.is_some();
+        ui.horizontal(|ui| {
+            if ui
+                .button(if watching {
+                    "Stop watch"
+                } else {
+                    "Start watch"
+                })
+                .clicked()
+            {
+                if watching {
+                    self.stop_log_watch();
+                } else if !self.log_host.is_empty() {
+                    self.start_log_watch();
+                }
+            }
+            if ui.button("Clear log").clicked() {
+                self.log_store = LogStore::new(4096);
+            }
+        });
+
+        ui.separator();
         ui.horizontal(|ui| {
             ui.label("Window (s)");
             ui.add(egui::Slider::new(&mut self.window_secs, 5.0..=120.0));
+        });
+    }
+
+    fn logs_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.heading("Logs");
+            let status = if self.log_watch.is_some() {
+                format!("watching {}@{}", self.log_user, self.log_host)
+            } else {
+                "not watching".to_string()
+            };
+            ui.label(RichText::new(status).color(theme::WEAK_TEXT));
+        });
+        ui.separator();
+        if self.log_store.events.is_empty() {
+            ui.label(
+                RichText::new("No log lines yet. Set a host in LOG WATCH and Start watch.").weak(),
+            );
+            return;
+        }
+        egui::ScrollArea::vertical()
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                for e in &self.log_store.events {
+                    let color = match e.level {
+                        LogLevel::Fault => theme::FAULT,
+                        LogLevel::Warn => theme::WARN,
+                        LogLevel::Info => theme::WEAK_TEXT,
+                    };
+                    ui.label(
+                        RichText::new(format!("[{:>8.3}] {}", e.t, e.message))
+                            .monospace()
+                            .color(color),
+                    );
+                }
+            });
+    }
+
+    fn history_ui(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Diagnosis history");
+        ui.separator();
+        if self.diag_history.is_empty() {
+            ui.label(RichText::new("No fault/warning transitions yet.").weak());
+            return;
+        }
+        egui::ScrollArea::vertical()
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                for e in &self.diag_history {
+                    let color = health_color(e.health);
+                    let tag = match e.health {
+                        Health::Fault => "FAULT",
+                        Health::Warn => "WARN",
+                        Health::Ok => "CLEARED",
+                    };
+                    ui.label(
+                        RichText::new(format!(
+                            "[{:>8.3}] {tag:<7} {} - {}",
+                            e.t, e.signal, e.message
+                        ))
+                        .monospace()
+                        .color(color),
+                    );
+                }
+            });
+    }
+
+    fn yocto_ui(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::left("yocto_controls")
+            .resizable(true)
+            .default_size(320.0)
+            .show(ui, |ui| {
+                ui.label(RichText::new("BUILD SERVER").strong());
+                ui.horizontal(|ui| {
+                    ui.label("Host");
+                    ui.text_edit_singleline(&mut self.yocto_host);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("User");
+                    ui.text_edit_singleline(&mut self.yocto_user);
+                });
+                let watching = self.stats_watch.is_some();
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(if watching { "Disconnect" } else { "Connect" })
+                        .clicked()
+                    {
+                        if watching {
+                            self.stop_yocto_stats();
+                        } else {
+                            self.start_yocto_stats();
+                        }
+                    }
+                });
+
+                ui.separator();
+                ui.label(RichText::new("DEVICE STATUS").strong());
+                let dot = if self.stats.reachable {
+                    theme::ACCENT
+                } else {
+                    theme::IDLE
+                };
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                    ui.painter().circle_filled(r.center(), 4.0, dot);
+                    ui.label(if self.stats.reachable {
+                        "Connected"
+                    } else {
+                        "Not connected"
+                    });
+                });
+                stat_bar(ui, "CPU", self.stats.cpu_load_pct);
+                stat_bar(ui, "RAM", self.stats.mem_used_pct);
+                stat_bar(ui, "Disk /", self.stats.disk_used_pct);
+
+                ui.separator();
+                ui.label(RichText::new("YOCTO PROJECT").strong());
+                ui.horizontal(|ui| {
+                    ui.label("Container");
+                    ui.text_edit_singleline(&mut self.yocto_container);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Workdir");
+                    ui.text_edit_singleline(&mut self.yocto_workdir);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Init");
+                    ui.text_edit_singleline(&mut self.yocto_init_cmd);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Target");
+                    ui.text_edit_singleline(&mut self.yocto_target);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Log");
+                    ui.text_edit_singleline(&mut self.yocto_log_path);
+                });
+
+                ui.add_space(6.0);
+                let building = self.build_log.is_some();
+                ui.horizontal(|ui| {
+                    if ui.button("Start build").clicked() && !self.yocto_host.is_empty() {
+                        self.start_build();
+                    }
+                    if building && ui.button("Stop watching log").clicked() {
+                        self.stop_build_log_watch();
+                    }
+                    if ui.button("Clear log").clicked() {
+                        self.build_log_store = LogStore::new(4096);
+                    }
+                });
+                ui.label(
+                    RichText::new("Start build kicks the job off detached, then tails its log - it doesn't wait for it to finish.")
+                        .weak()
+                        .small(),
+                );
+            });
+
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.yocto_files, false, "Build Log");
+            ui.selectable_value(&mut self.yocto_files, true, "Files & Transfer");
+        });
+        ui.separator();
+        if self.yocto_files {
+            self.files.ui(ui, &self.yocto_host, &self.yocto_user);
+            return;
+        }
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.heading("Build Log");
+                let (faults, warns) = self.build_log_store.counts();
+                if faults > 0 {
+                    ui.label(
+                        RichText::new(format!("{faults} error(s)"))
+                            .color(theme::FAULT)
+                            .strong(),
+                    );
+                } else if warns > 0 {
+                    ui.label(
+                        RichText::new(format!("{warns} warning(s)"))
+                            .color(theme::WARN)
+                            .strong(),
+                    );
+                }
+            });
+            ui.separator();
+            if self.build_log_store.events.is_empty() {
+                ui.label(RichText::new("No build output yet. Set Host, then Start build.").weak());
+                return;
+            }
+            egui::ScrollArea::vertical()
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    for e in &self.build_log_store.events {
+                        let color = match e.level {
+                            LogLevel::Fault => theme::FAULT,
+                            LogLevel::Warn => theme::WARN,
+                            LogLevel::Info => theme::WEAK_TEXT,
+                        };
+                        ui.label(RichText::new(&e.message).monospace().small().color(color));
+                    }
+                });
         });
     }
 
@@ -482,13 +1098,37 @@ impl BenchpeekApp {
                     if !self.visible.get(&sig.meta.name).copied().unwrap_or(true) {
                         continue;
                     }
+                    let color = health_color(self.health_of(&sig.meta.name));
+
+                    // Rule thresholds as faint dashed guides, so the healthy
+                    // range is visible on the plot itself, not just implied
+                    // by the diagnosis panel.
+                    if let Some(rule) = self.rules.rules.iter().find(|r| r.signal == sig.meta.name)
+                    {
+                        let guide_color = rule_color(rule).linear_multiply(0.55);
+                        if let Some(min) = rule.min {
+                            plot_ui.hline(
+                                egui_plot::HLine::new(format!("{} min", sig.meta.name), min)
+                                    .color(guide_color)
+                                    .style(LineStyle::dashed_loose()),
+                            );
+                        }
+                        if let Some(max) = rule.max {
+                            plot_ui.hline(
+                                egui_plot::HLine::new(format!("{} max", sig.meta.name), max)
+                                    .color(guide_color)
+                                    .style(LineStyle::dashed_loose()),
+                            );
+                        }
+                    }
+
                     let pts: PlotPoints = sig
                         .points
                         .iter()
                         .filter(|p| p[0] >= t_min)
                         .map(|p| [p[0], p[1]])
                         .collect();
-                    plot_ui.line(Line::new(sig.meta.name.clone(), pts));
+                    plot_ui.line(Line::new(sig.meta.name.clone(), pts).color(color));
                 }
             });
     }
@@ -498,21 +1138,68 @@ impl eframe::App for BenchpeekApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_auto_mode();
         self.pump();
+        self.pump_logs();
+        self.pump_yocto_stats();
+        self.pump_build_log();
         self.diagnoses = evaluate(&self.rules, &self.store);
+        self.track_diag_history();
 
-        egui::Panel::left("controls")
-            .resizable(true)
-            .default_size(290.0)
-            .show(ui, |ui| self.controls_ui(ui));
-        egui::Panel::right("signal_table")
-            .resizable(true)
-            .default_size(240.0)
-            .show(ui, |ui| self.signal_table_ui(ui));
-        egui::Panel::bottom("diagnosis")
-            .resizable(true)
-            .default_size(170.0)
-            .show(ui, |ui| self.diagnosis_ui(ui));
-        egui::CentralPanel::default().show(ui, |ui| self.plot_ui(ui));
+        if self.welcome.visible {
+            if self.welcome_scan.elapsed() >= Duration::from_secs(1) {
+                self.welcome_ports = list_usb_ports();
+                self.welcome_scan = Instant::now();
+            }
+            egui::CentralPanel::default().show(ui, |ui| {
+                if self.welcome.ui(ui, &self.welcome_ports) {
+                    self.auto_mode = true;
+                    self.auto_last_scan = Instant::now() - Duration::from_secs(2);
+                }
+            });
+            ui.ctx().request_repaint_after(Duration::from_millis(33));
+            return;
+        }
+
+        egui::Panel::top("topbar")
+            .resizable(false)
+            .default_size(30.0)
+            .show(ui, |ui| self.topbar_ui(ui));
+
+        match self.mode {
+            AppMode::Diagnostics => {
+                egui::Panel::left("controls")
+                    .resizable(true)
+                    .default_size(290.0)
+                    .show(ui, |ui| self.controls_ui(ui));
+                egui::Panel::right("signal_table")
+                    .resizable(true)
+                    .default_size(240.0)
+                    .show(ui, |ui| self.signal_table_ui(ui));
+                egui::Panel::bottom("diagnosis")
+                    .resizable(true)
+                    .default_size(170.0)
+                    .show(ui, |ui| self.diagnosis_ui(ui));
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.central_view, CentralView::Plot, "Plot");
+                        ui.selectable_value(&mut self.central_view, CentralView::Logs, "Logs");
+                        ui.selectable_value(
+                            &mut self.central_view,
+                            CentralView::History,
+                            "History",
+                        );
+                    });
+                    ui.separator();
+                    match self.central_view {
+                        CentralView::Plot => self.plot_ui(ui),
+                        CentralView::Logs => self.logs_ui(ui),
+                        CentralView::History => self.history_ui(ui),
+                    }
+                });
+            }
+            AppMode::Yocto => {
+                egui::CentralPanel::default().show(ui, |ui| self.yocto_ui(ui));
+            }
+        }
 
         ui.ctx().request_repaint_after(Duration::from_millis(33));
     }

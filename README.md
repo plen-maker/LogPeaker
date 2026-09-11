@@ -72,6 +72,30 @@ plugin to WASM shouldn't mean rewriting it.
 Rules live in code (`default_rules()`) for now; `rules/example.toml` documents the
 file format that the loader (`RuleSet::from_toml_file`) already supports.
 
+## Log watch
+
+Independent of the signal source above: tails a remote board's log over SSH
+(`journalctl -f -o cat` by default) into its own store, classifying each line
+Info/Warn/Fault by keyword. Set **Host** (+ User/Command) in LOG WATCH and hit
+**Start watch** - can run at the same time as a serial/simulated source, since
+it's a different concern (text events, not numeric signals) and often a
+different host entirely. View it under the **Logs** tab in the central panel;
+its fault/warn counts feed into the same top-bar indicator as signal
+diagnoses. Key-based SSH auth only (`BatchMode=yes`) - a spawned process has
+no tty to prompt a password into, so set up `ssh-copy-id` first.
+
+## Reading the plot and the History tab
+
+Signal lines on the Plot tab are colored by live health (green/amber/red),
+not an arbitrary palette. Any signal with a matching rule also gets faint
+dashed threshold guides at its min/max, colored by the rule's severity, so
+the healthy range is visible on the chart itself.
+
+The **History** tab (next to Plot/Logs) is a timeline of health *transitions*
+— when a signal first went into warn/fault, when it escalated, and when it
+cleared — separate from the Diagnosis panel, which only ever shows the
+current snapshot.
+
 ## Roadmap
 
 - Plugin SDK docs + a second decoder (CAN DBC or NMEA) in a different source
@@ -79,3 +103,36 @@ file format that the loader (`RuleSet::from_toml_file`) already supports.
 - CAN / SocketCAN + USB transports
 - KiCad project import with net ↔ live-signal cross-highlight
 - Scripted test sequences with pass/fail reports
+
+## Connection guide
+
+Launch opens a skippable, animated connection guide: a stylized STM32MP257F-DK
+board overview zooms toward CN21 (USB-C ST-LINK/power), then prompts “Plug in
+the device”. Reduce motion freezes the camera at the connector. Replay or
+reopen it using **Connection guide** in the top bar. **Enable auto-connect**
+uses the existing USB-serial source discovery; it does not identify the board
+model or guarantee a telemetry stream. A Linux console needs a telemetry
+producer to supply the decoder's KEY=VALUE samples.
+
+This is a native egui vector illustration, not a dimensionally accurate CAD
+model or a Blender render. Connector roles reference ST's
+[UM3385, figure 4](https://www.st.com/resource/en/user_manual/um3385-discovery-kit-with-stm32mp257f-mpu-stmicroelectronics.pdf).
+
+## Yocto files and sync
+
+In **Yocto → Files & Transfer**, enter the Build Server SSH host/user and an
+absolute remote folder, then **Browse**. Directories open with a click; **Up**
+navigates to the parent. This browses the host filesystem; to access a Docker
+project, use its host bind-mount path.
+
+Set an existing absolute local folder and choose Upload or Download. **Preview
+sync** runs an rsync dry run; **Apply sync** becomes available for that exact
+host, user, paths and options. Copies directory contents recursively, keeps
+destination-only files, and skips symlinks. Existing files are skipped unless
+**Update existing files** is enabled. The preview is informational: changes to
+files between preview and execution can change what gets copied. Cancellation
+stops the worker; files already copied remain. Errors appear in the panel.
+
+Requires key-based SSH, a trusted host key in known_hosts, GNU find on the
+server, and rsync installed both locally and remotely. No remote operations
+occur until the user clicks Browse, Preview sync, or Apply sync.

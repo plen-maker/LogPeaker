@@ -24,6 +24,18 @@ pub enum UsbEndpointKind {
     Interrupt,
 }
 
+/// Identifies one USB device + endpoint to read from. Bundled into one
+/// struct (rather than five same-typed parameters) so a transposed
+/// argument at a call site is a type error, not a silent mismatch.
+#[derive(Clone, Copy)]
+struct UsbTarget {
+    vendor_id: u16,
+    product_id: u16,
+    interface: u8,
+    endpoint: u8,
+    kind: UsbEndpointKind,
+}
+
 pub enum SourceKind {
     /// A fake board: three plausible signals with a battery fault injected
     /// after 15 s so the rule engine has something to catch.
@@ -99,11 +111,13 @@ pub fn spawn(kind: SourceKind, mut decoder: Box<dyn Decoder>) -> SourceHandle {
                 endpoint,
                 kind,
             } => run_usb(
-                vendor_id,
-                product_id,
-                interface,
-                endpoint,
-                kind,
+                &UsbTarget {
+                    vendor_id,
+                    product_id,
+                    interface,
+                    endpoint,
+                    kind,
+                },
                 decoder.as_mut(),
                 &tx,
                 &stop_thread,
@@ -156,6 +170,21 @@ fn run_sim(
     Ok(())
 }
 
+/// Retries `session` with a fixed backoff on error until `stop` is set,
+/// logging each failure with `label` - the shared shape behind every
+/// source's "keep trying to (re)connect" behavior (serial/CAN/USB): a
+/// disconnected board, an interface that isn't up yet, or a device that
+/// hasn't been plugged in shouldn't kill the source thread, just make it
+/// keep trying.
+fn with_reconnect(label: &str, stop: &AtomicBool, mut session: impl FnMut() -> Result<()>) {
+    while !stop.load(Ordering::Relaxed) {
+        if let Err(e) = session() {
+            eprintln!("benchpeek source: {label} error, reconnecting: {e:#}");
+            thread::sleep(Duration::from_millis(300));
+        }
+    }
+}
+
 /// Boards commonly reset/re-enumerate their USB-CDC interface right when a
 /// host first opens the port (e.g. a DTR-triggered target reset on ST-Link
 /// VCPs), which can surface as a transient read error milliseconds in. A
@@ -171,12 +200,9 @@ fn run_serial(
     stop: &AtomicBool,
     start: Instant,
 ) -> Result<()> {
-    while !stop.load(Ordering::Relaxed) {
-        if let Err(e) = serial_session(port, baud, decoder, tx, stop, start) {
-            eprintln!("benchpeek source: {port} error, reconnecting: {e:#}");
-            thread::sleep(Duration::from_millis(300));
-        }
-    }
+    with_reconnect(port, stop, || {
+        serial_session(port, baud, &mut *decoder, tx, stop, start)
+    });
     Ok(())
 }
 
@@ -218,12 +244,9 @@ fn run_can(
     stop: &AtomicBool,
     start: Instant,
 ) -> Result<()> {
-    while !stop.load(Ordering::Relaxed) {
-        if let Err(e) = can_session(interface, decoder, tx, stop, start) {
-            eprintln!("benchpeek source: can {interface} error, reconnecting: {e:#}");
-            thread::sleep(Duration::from_millis(300));
-        }
-    }
+    with_reconnect(&format!("can {interface}"), stop, || {
+        can_session(interface, &mut *decoder, tx, stop, start)
+    });
     Ok(())
 }
 
@@ -258,9 +281,10 @@ fn can_session(
 /// data>`) so it flows through the same byte-stream [`Decoder`] every other
 /// source uses, instead of adding a second, frame-shaped decoding path.
 fn can_frame_line(id: u32, data: &[u8]) -> String {
+    use std::fmt::Write;
     let mut line = format!("{id:X}#");
     for b in data {
-        line.push_str(&format!("{b:02X}"));
+        let _ = write!(line, "{b:02X}");
     }
     line.push('\n');
     line
@@ -269,52 +293,35 @@ fn can_frame_line(id: u32, data: &[u8]) -> String {
 /// A USB device can be unplugged/replugged at any point, so a failed open
 /// or a stalled/disconnected endpoint retries instead of giving up, same
 /// as the serial and CAN sources.
-#[allow(clippy::too_many_arguments)]
 fn run_usb(
-    vendor_id: u16,
-    product_id: u16,
-    interface_num: u8,
-    endpoint: u8,
-    kind: UsbEndpointKind,
+    target: &UsbTarget,
     decoder: &mut dyn Decoder,
     tx: &Sender<Sample>,
     stop: &AtomicBool,
     start: Instant,
 ) -> Result<()> {
-    while !stop.load(Ordering::Relaxed) {
-        let result = usb_session(
-            vendor_id,
-            product_id,
-            interface_num,
-            endpoint,
-            kind,
-            decoder,
-            tx,
-            stop,
-            start,
-        );
-        if let Err(e) = result {
-            eprintln!(
-                "benchpeek source: usb {vendor_id:04x}:{product_id:04x} error, reconnecting: {e:#}"
-            );
-            thread::sleep(Duration::from_millis(300));
-        }
-    }
+    let label = format!("usb {:04x}:{:04x}", target.vendor_id, target.product_id);
+    with_reconnect(&label, stop, || {
+        usb_session(target, &mut *decoder, tx, stop, start)
+    });
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn usb_session(
-    vendor_id: u16,
-    product_id: u16,
-    interface_num: u8,
-    endpoint: u8,
-    kind: UsbEndpointKind,
+    target: &UsbTarget,
     decoder: &mut dyn Decoder,
     tx: &Sender<Sample>,
     stop: &AtomicBool,
     start: Instant,
 ) -> Result<()> {
+    let UsbTarget {
+        vendor_id,
+        product_id,
+        interface: interface_num,
+        endpoint,
+        kind,
+    } = *target;
+
     let info = nusb::list_devices()
         .wait()
         .context("listing USB devices")?
@@ -359,8 +366,11 @@ fn usb_read_loop<EpType: BulkOrInterrupt>(
     // comfortably larger than one packet so a burst doesn't immediately
     // split across reads.
     let chunk_len = ep.max_packet_size().max(64) * 8;
+    // Allocated once and handed back by every `Completion` (success or
+    // cancelled-by-timeout alike), so a fast device streaming well under
+    // the 200ms timeout doesn't churn a fresh heap allocation every pass.
+    let mut buf = ep.allocate(chunk_len);
     while !stop.load(Ordering::Relaxed) {
-        let buf = ep.allocate(chunk_len);
         let completion = ep.transfer_blocking(buf, Duration::from_millis(200));
         match completion.status {
             Ok(()) => {
@@ -374,6 +384,7 @@ fn usb_read_loop<EpType: BulkOrInterrupt>(
             Err(TransferError::Cancelled) => {}
             Err(e) => return Err(e.into()),
         }
+        buf = completion.buffer;
     }
     Ok(())
 }

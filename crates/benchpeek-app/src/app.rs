@@ -295,11 +295,17 @@ fn step_summary(step: &TestStep) -> String {
         (None, Some(max)) => format!("<= {max}"),
         (None, None) => "any value".to_string(),
     };
-    let label = step.label.as_deref().unwrap_or(&step.signal);
     format!(
-        "{label}: {} in {range} for {:.1}s (timeout {:.1}s)",
-        step.signal, step.hold_secs, step.timeout_secs
+        "{}: {} in {range} for {:.1}s (timeout {:.1}s)",
+        step.display_label(),
+        step.signal,
+        step.hold_secs,
+        step.timeout_secs
     )
+}
+
+fn loaded_sequence_status(seq: &TestSequence) -> String {
+    format!("loaded \"{}\" ({} steps)", seq.name, seq.steps.len())
 }
 
 fn health_color(h: Health) -> Color32 {
@@ -602,8 +608,7 @@ impl BenchpeekApp {
     fn load_sequence(&mut self) {
         match TestSequence::from_toml_file(&self.sequence_path) {
             Ok(seq) => {
-                self.sequence_status =
-                    format!("loaded \"{}\" ({} steps)", seq.name, seq.steps.len());
+                self.sequence_status = loaded_sequence_status(&seq);
                 self.loaded_sequence = Some(seq);
                 self.sequence_runner = None;
             }
@@ -860,7 +865,6 @@ impl BenchpeekApp {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label("Port");
-            let ports = self.ports.clone();
             egui::ComboBox::from_id_salt("port")
                 .selected_text(if self.port.is_empty() {
                     "-".to_string()
@@ -868,7 +872,7 @@ impl BenchpeekApp {
                     self.port.clone()
                 })
                 .show_ui(ui, |ui| {
-                    for p in ports {
+                    for p in &self.ports {
                         ui.selectable_value(&mut self.port, p.clone(), p);
                     }
                 });
@@ -880,17 +884,20 @@ impl BenchpeekApp {
             ui.label("Baud");
             ui.add(egui::DragValue::new(&mut self.baud).range(300..=4_000_000));
         });
-        if ui.button("Open serial").clicked() && !self.port.is_empty() {
-            self.start(SourceKind::Serial {
-                port: self.port.clone(),
-                baud: self.baud,
-            });
+        if ui.button("Open serial").clicked() {
+            if self.port.is_empty() {
+                self.status = "serial: pick a port first".to_string();
+            } else {
+                self.start(SourceKind::Serial {
+                    port: self.port.clone(),
+                    baud: self.baud,
+                });
+            }
         }
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label("CAN if");
-            let ifaces = self.can_ifaces.clone();
             egui::ComboBox::from_id_salt("can_iface")
                 .selected_text(if self.can_iface.is_empty() {
                     "-".to_string()
@@ -898,7 +905,7 @@ impl BenchpeekApp {
                     self.can_iface.clone()
                 })
                 .show_ui(ui, |ui| {
-                    for i in ifaces {
+                    for i in &self.can_ifaces {
                         ui.selectable_value(&mut self.can_iface, i.clone(), i);
                     }
                 });
@@ -906,10 +913,14 @@ impl BenchpeekApp {
                 self.can_ifaces = list_can_interfaces();
             }
         });
-        if ui.button("Open CAN").clicked() && !self.can_iface.is_empty() {
-            self.start(SourceKind::Can {
-                interface: self.can_iface.clone(),
-            });
+        if ui.button("Open CAN").clicked() {
+            if self.can_iface.is_empty() {
+                self.status = "can: pick an interface first".to_string();
+            } else {
+                self.start(SourceKind::Can {
+                    interface: self.can_iface.clone(),
+                });
+            }
         }
 
         ui.add_space(6.0);
@@ -1163,11 +1174,10 @@ impl BenchpeekApp {
                 .clicked()
             {
                 self.sequence_runner = None;
-                self.sequence_status = "no sequence loaded".to_string();
-                if let Some(seq) = &self.loaded_sequence {
-                    self.sequence_status =
-                        format!("loaded \"{}\" ({} steps)", seq.name, seq.steps.len());
-                }
+                self.sequence_status = match &self.loaded_sequence {
+                    Some(seq) => loaded_sequence_status(seq),
+                    None => "no sequence loaded".to_string(),
+                };
             }
         });
         ui.label(RichText::new(&self.sequence_status).weak());

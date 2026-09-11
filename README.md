@@ -1,7 +1,7 @@
 # benchpeek
 
 An open, extensible **board-diagnostics cockpit**. Connect to a board over a
-transport (serial today; CAN/USB next), let a *decoder plugin* turn the raw
+transport (serial, CAN, or raw USB), let a *decoder plugin* turn the raw
 stream into named signals, and benchpeek does the rest: live table, live plot,
 session record/replay, and a rule engine that turns values into a plain-language
 **diagnosis** ("VBAT 10.2 V — battery voltage out of range, check charging
@@ -17,7 +17,7 @@ indistinguishable from a compiled-in decoder to the rest of the app.
 |-------|------|
 | `benchpeek-plugin`     | the decoder API (`Decoder`, `Sample`, `SignalMeta`) |
 | `benchpeek-core`       | signal store (ring buffers), rule evaluator, record/replay |
-| `benchpeek-app`        | egui cockpit + source threads (simulated / serial / CAN / replay) |
+| `benchpeek-app`        | egui cockpit + source threads (simulated / serial / CAN / USB / replay) |
 | `benchpeek-wasm-host`  | loads a `benchpeek:decoder` component and wraps it as a `Decoder` |
 | `plugins/ascii-kv`     | reference decoder logic: newline-delimited `KEY=VALUE` telemetry |
 | `plugins/ascii-kv-wasm`| the same decoder, exported as a WASM component (builds for `wasm32-unknown-unknown` only) |
@@ -112,6 +112,30 @@ at any `.dbc` file - it parses that DBC's signals out at runtime, with
 correct units and healthy ranges; point it at nothing and it falls back to
 its worked example (`VBAT`/`RPM`/`TEMP` out of CAN ID `0x301`).
 
+## USB (raw bulk/interrupt)
+
+A third alternative alongside Serial/CAN: reads a bulk or interrupt IN
+endpoint straight off a USB device by VID:PID, for a device that doesn't
+enumerate as USB-CDC (that case is already **Port** above - Serial). Under
+**Raw USB**, **scan** lists connected devices, or type a **VID**/**PID**
+pair directly; set **If** to the interface number and **Endpoint** to its
+address in hex (e.g. `81`), pick **Bulk** or **Interrupt** to match the
+endpoint's actual type (the device descriptor decides this, not you - the
+wrong choice is rejected at **Open USB**), then **Open USB**. Reconnects
+automatically on unplug/replug, same as Serial and CAN.
+
+Bytes come straight off the wire into the same pluggable `Decoder` every
+other source uses - no framing translation needed, since a raw USB
+transfer already *is* a chunk of bytes (`SourceKind::Usb` /
+`usb_read_loop` in `source.rs`). Built on [`nusb`](https://docs.rs/nusb), a
+pure-Rust USB library - no `libusb` system dependency.
+`usb_read_loop_receives_a_real_device_response` (`#[ignore]`d by default,
+needs real hardware - `cargo test -p benchpeek-app -- --ignored
+usb_read_loop_receives_a_real_device_response`) proves the transport with
+an actual bulk transfer against an attached ST-Link: writes its well-known,
+read-only `GET_VERSION` command and confirms a real response comes back
+through this exact code path.
+
 ## Rules
 
 Rules live in code (`default_rules()`) for now; `rules/example.toml` documents the
@@ -177,12 +201,6 @@ This parses the netlist's `(nets ...)` section (`NetList` in
 KiCad project importer) rather than rendering the schematic or PCB itself;
 there's no visual schematic in benchpeek to click a net on, so highlighting
 runs net name -> signal name instead of net geometry -> plot pixel.
-
-## Roadmap
-
-- USB transport beyond USB-serial (raw bulk/interrupt endpoints for a
-  non-CDC device) - Serial already covers USB-CDC boards, CAN is covered
-  above
 
 ## Connection guide
 

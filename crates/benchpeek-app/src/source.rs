@@ -12,7 +12,17 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use benchpeek_core::{classify_line, load_replay, Decoder, LogEvent, Sample};
+use nusb::transfer::{Bulk, BulkOrInterrupt, In, Interrupt, TransferError};
+use nusb::MaybeFuture;
 use socketcan::{CanSocket, EmbeddedFrame, Frame, ShouldRetry, Socket};
+
+/// Which transfer type a raw USB endpoint uses - fixed by the device's own
+/// descriptor, so the app has to be told which one to ask for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum UsbEndpointKind {
+    Bulk,
+    Interrupt,
+}
 
 pub enum SourceKind {
     /// A fake board: three plausible signals with a battery fault injected
@@ -27,6 +37,18 @@ pub enum SourceKind {
     /// every other source uses (see `can_frame_line`).
     Can {
         interface: String,
+    },
+    /// A raw (non-serial) USB device's bulk or interrupt IN endpoint - for
+    /// a device that doesn't enumerate as USB-CDC (already covered by
+    /// `Serial`), e.g. a vendor-specific debug/telemetry interface. Bytes
+    /// go straight to the [`Decoder`] with no framing translation, same as
+    /// serial - a raw USB transfer already *is* a chunk of bytes.
+    Usb {
+        vendor_id: u16,
+        product_id: u16,
+        interface: u8,
+        endpoint: u8,
+        kind: UsbEndpointKind,
     },
     Replay {
         path: String,
@@ -70,6 +92,23 @@ pub fn spawn(kind: SourceKind, mut decoder: Box<dyn Decoder>) -> SourceHandle {
             SourceKind::Can { interface } => {
                 run_can(&interface, decoder.as_mut(), &tx, &stop_thread, start)
             }
+            SourceKind::Usb {
+                vendor_id,
+                product_id,
+                interface,
+                endpoint,
+                kind,
+            } => run_usb(
+                vendor_id,
+                product_id,
+                interface,
+                endpoint,
+                kind,
+                decoder.as_mut(),
+                &tx,
+                &stop_thread,
+                start,
+            ),
             SourceKind::Replay { path } => run_replay(&path, &tx, &stop_thread),
         };
         if let Err(e) = result {
@@ -227,6 +266,118 @@ fn can_frame_line(id: u32, data: &[u8]) -> String {
     line
 }
 
+/// A USB device can be unplugged/replugged at any point, so a failed open
+/// or a stalled/disconnected endpoint retries instead of giving up, same
+/// as the serial and CAN sources.
+#[allow(clippy::too_many_arguments)]
+fn run_usb(
+    vendor_id: u16,
+    product_id: u16,
+    interface_num: u8,
+    endpoint: u8,
+    kind: UsbEndpointKind,
+    decoder: &mut dyn Decoder,
+    tx: &Sender<Sample>,
+    stop: &AtomicBool,
+    start: Instant,
+) -> Result<()> {
+    while !stop.load(Ordering::Relaxed) {
+        let result = usb_session(
+            vendor_id,
+            product_id,
+            interface_num,
+            endpoint,
+            kind,
+            decoder,
+            tx,
+            stop,
+            start,
+        );
+        if let Err(e) = result {
+            eprintln!(
+                "benchpeek source: usb {vendor_id:04x}:{product_id:04x} error, reconnecting: {e:#}"
+            );
+            thread::sleep(Duration::from_millis(300));
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn usb_session(
+    vendor_id: u16,
+    product_id: u16,
+    interface_num: u8,
+    endpoint: u8,
+    kind: UsbEndpointKind,
+    decoder: &mut dyn Decoder,
+    tx: &Sender<Sample>,
+    stop: &AtomicBool,
+    start: Instant,
+) -> Result<()> {
+    let info = nusb::list_devices()
+        .wait()
+        .context("listing USB devices")?
+        .find(|d| d.vendor_id() == vendor_id && d.product_id() == product_id)
+        .ok_or_else(|| anyhow!("no USB device {vendor_id:04x}:{product_id:04x}"))?;
+    let device = info
+        .open()
+        .wait()
+        .with_context(|| format!("opening USB device {vendor_id:04x}:{product_id:04x}"))?;
+    let interface = device
+        .claim_interface(interface_num)
+        .wait()
+        .with_context(|| format!("claiming USB interface {interface_num}"))?;
+
+    match kind {
+        UsbEndpointKind::Bulk => {
+            let ep = interface
+                .endpoint::<Bulk, In>(endpoint)
+                .with_context(|| format!("opening bulk IN endpoint {endpoint:#04x}"))?;
+            usb_read_loop(ep, decoder, tx, stop, start)
+        }
+        UsbEndpointKind::Interrupt => {
+            let ep = interface
+                .endpoint::<Interrupt, In>(endpoint)
+                .with_context(|| format!("opening interrupt IN endpoint {endpoint:#04x}"))?;
+            usb_read_loop(ep, decoder, tx, stop, start)
+        }
+    }
+}
+
+/// Shared read loop for bulk and interrupt IN endpoints - identical past
+/// the type-level `EpType`, which just picks which transfer type the OS
+/// submits.
+fn usb_read_loop<EpType: BulkOrInterrupt>(
+    mut ep: nusb::Endpoint<EpType, In>,
+    decoder: &mut dyn Decoder,
+    tx: &Sender<Sample>,
+    stop: &AtomicBool,
+    start: Instant,
+) -> Result<()> {
+    // A multiple of max_packet_size, as `submit` requires for IN transfers;
+    // comfortably larger than one packet so a burst doesn't immediately
+    // split across reads.
+    let chunk_len = ep.max_packet_size().max(64) * 8;
+    while !stop.load(Ordering::Relaxed) {
+        let buf = ep.allocate(chunk_len);
+        let completion = ep.transfer_blocking(buf, Duration::from_millis(200));
+        match completion.status {
+            Ok(()) => {
+                let t = start.elapsed().as_secs_f64();
+                for s in decoder.decode(&completion.buffer[..completion.actual_len], t) {
+                    let _ = tx.send(s);
+                }
+            }
+            // The blocking wait's own timeout, not a device error - loop
+            // back around to recheck `stop`.
+            Err(TransferError::Cancelled) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
 /// Owns the log-watch thread; stops it (and kills the underlying `ssh`) on
 /// `stop()` or drop. Independent of [`SourceHandle`] - watching a board's
 /// logs over SSH and reading its serial telemetry are separate concerns,
@@ -378,6 +529,84 @@ mod tests {
     fn can_frame_line_is_candump_format() {
         assert_eq!(can_frame_line(0x301, &[1, 2, 0xAB]), "301#0102AB\n");
         assert_eq!(can_frame_line(0x18FEF100, &[]), "18FEF100#\n");
+    }
+
+    /// Decoder that turns every chunk into one `Sample` recording its
+    /// length, so a test can tell real bytes came back over the wire
+    /// without caring about their content.
+    struct RecordChunkLen;
+    impl Decoder for RecordChunkLen {
+        fn name(&self) -> &str {
+            "test"
+        }
+        fn signals(&self) -> Vec<benchpeek_core::SignalMeta> {
+            Vec::new()
+        }
+        fn decode(&mut self, bytes: &[u8], t: f64) -> Vec<Sample> {
+            vec![Sample::new("usb_chunk_len", bytes.len() as f64, t)]
+        }
+    }
+
+    /// Exercises `usb_read_loop` - the same code the app uses - against a
+    /// real USB device over real usbfs, not just parsing logic: sends
+    /// ST-Link's well-known, read-only `STLINK_GET_VERSION` (0xF1) command
+    /// on bulk OUT ep 0x01, then confirms `usb_read_loop` actually receives
+    /// the device's response on bulk IN ep 0x81 and runs it through a
+    /// `Decoder`. Ignored by default since it needs an ST-Link (V2 or V3)
+    /// attached; this repo's dev sandbox has a simulated one at 0483:3753.
+    #[test]
+    #[ignore = "requires an ST-Link at USB 0483:3753 (VID:PID) - run explicitly with `cargo test -p benchpeek-app -- --ignored usb_read_loop_receives_a_real_device_response`"]
+    fn usb_read_loop_receives_a_real_device_response() {
+        use nusb::transfer::Out;
+
+        let info = nusb::list_devices()
+            .wait()
+            .expect("list USB devices")
+            .find(|d| d.vendor_id() == 0x0483 && d.product_id() == 0x3753)
+            .expect("no ST-Link (0483:3753) attached");
+        let device = info.open().wait().expect("open ST-Link");
+        let interface = device
+            .claim_interface(0)
+            .wait()
+            .expect("claim ST-Link interface 0");
+
+        let mut cmd_ep = interface
+            .endpoint::<Bulk, Out>(0x01)
+            .expect("bulk OUT ep 0x01");
+        // STLINK_GET_VERSION, padded to the command packet size every
+        // ST-Link host tool (OpenOCD, STM32CubeProgrammer, ...) uses.
+        let mut cmd = vec![0u8; 16];
+        cmd[0] = 0xF1;
+        let sent = cmd_ep.transfer_blocking(cmd.into(), Duration::from_secs(1));
+        sent.status.expect("writing GET_VERSION command");
+
+        let in_ep = interface
+            .endpoint::<Bulk, In>(0x81)
+            .expect("bulk IN ep 0x81");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = stop.clone();
+        let start = Instant::now();
+        let handle = thread::spawn(move || {
+            let mut decoder = RecordChunkLen;
+            usb_read_loop(in_ep, &mut decoder, &tx, &stop_thread, start)
+        });
+
+        let sample = rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("no response read back from ST-Link's bulk IN endpoint");
+        stop.store(true, Ordering::Relaxed);
+        handle
+            .join()
+            .unwrap()
+            .expect("usb_read_loop returned an error");
+
+        assert_eq!(sample.signal, "usb_chunk_len");
+        assert!(
+            sample.value > 0.0,
+            "GET_VERSION response should be a non-empty packet"
+        );
     }
 
     /// 127.0.0.1 refuses batch-mode auth (no key set up for this bogus

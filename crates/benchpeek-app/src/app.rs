@@ -13,8 +13,9 @@ use benchpeek_core::{
 use benchpeek_plugin::Decoder;
 use eframe::egui::{self, Color32, RichText};
 use egui_plot::{Legend, Line, LineStyle, Plot, PlotPoints};
+use nusb::MaybeFuture;
 
-use crate::source::{self, LogWatcher, SourceHandle, SourceKind};
+use crate::source::{self, LogWatcher, SourceHandle, SourceKind, UsbEndpointKind};
 use crate::theme;
 use crate::yocto::{self, DeviceStats, StatsWatcher};
 
@@ -36,6 +37,13 @@ enum CentralView {
     History,
     Tests,
     Kicad,
+}
+
+/// One entry in the USB device picker.
+struct UsbDeviceEntry {
+    vendor_id: u16,
+    product_id: u16,
+    label: String,
 }
 
 /// Top-level app mode: live board diagnostics vs. the Yocto build
@@ -68,6 +76,12 @@ pub struct BenchpeekApp {
     ports: Vec<String>,
     can_iface: String,
     can_ifaces: Vec<String>,
+    usb_vid: String,
+    usb_pid: String,
+    usb_interface: u8,
+    usb_endpoint: String,
+    usb_kind: UsbEndpointKind,
+    usb_devices: Vec<UsbDeviceEntry>,
 
     // Auto mode: watch for a serial port appearing and connect to it.
     auto_mode: bool,
@@ -147,6 +161,12 @@ impl Default for BenchpeekApp {
             ports: list_ports(),
             can_iface: String::new(),
             can_ifaces: list_can_interfaces(),
+            usb_vid: String::new(),
+            usb_pid: String::new(),
+            usb_interface: 0,
+            usb_endpoint: String::new(),
+            usb_kind: UsbEndpointKind::Bulk,
+            usb_devices: list_usb_devices(),
             auto_mode: false,
             auto_last_scan: Instant::now(),
             active_port: None,
@@ -248,6 +268,22 @@ fn list_usb_ports() -> Vec<String> {
 
 fn list_can_interfaces() -> Vec<String> {
     socketcan::available_interfaces().unwrap_or_default()
+}
+
+fn list_usb_devices() -> Vec<UsbDeviceEntry> {
+    let Ok(devices) = nusb::list_devices().wait() else {
+        return Vec::new();
+    };
+    devices
+        .map(|d| {
+            let product = d.product_string().unwrap_or("?");
+            UsbDeviceEntry {
+                vendor_id: d.vendor_id(),
+                product_id: d.product_id(),
+                label: format!("{:04x}:{:04x} {product}", d.vendor_id(), d.product_id()),
+            }
+        })
+        .collect()
 }
 
 /// One-line description of a test step for the Tests panel, e.g.
@@ -375,6 +411,13 @@ impl BenchpeekApp {
             SourceKind::Simulated => "simulated board".to_string(),
             SourceKind::Serial { port, baud } => format!("serial {port} @ {baud}"),
             SourceKind::Can { interface } => format!("can {interface}"),
+            SourceKind::Usb {
+                vendor_id,
+                product_id,
+                interface,
+                endpoint,
+                ..
+            } => format!("usb {vendor_id:04x}:{product_id:04x} if{interface} ep{endpoint:#04x}"),
             SourceKind::Replay { path } => format!("replay {path}"),
         };
         self.source = Some(source::spawn(kind, decoder));
@@ -867,6 +910,74 @@ impl BenchpeekApp {
             self.start(SourceKind::Can {
                 interface: self.can_iface.clone(),
             });
+        }
+
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new("Raw USB (not USB-serial - that's Port above)")
+                .weak()
+                .small(),
+        );
+        ui.horizontal(|ui| {
+            ui.label("USB dev");
+            let devices_label = if self.usb_vid.is_empty() || self.usb_pid.is_empty() {
+                "-".to_string()
+            } else {
+                format!("{}:{}", self.usb_vid, self.usb_pid)
+            };
+            egui::ComboBox::from_id_salt("usb_device")
+                .selected_text(devices_label)
+                .show_ui(ui, |ui| {
+                    for d in &self.usb_devices {
+                        let vid = format!("{:04x}", d.vendor_id);
+                        let pid = format!("{:04x}", d.product_id);
+                        let selected = self.usb_vid == vid && self.usb_pid == pid;
+                        if ui.selectable_label(selected, &d.label).clicked() {
+                            self.usb_vid = vid;
+                            self.usb_pid = pid;
+                        }
+                    }
+                });
+            if ui.small_button("scan").clicked() {
+                self.usb_devices = list_usb_devices();
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("VID");
+            ui.add(egui::TextEdit::singleline(&mut self.usb_vid).desired_width(40.0));
+            ui.label("PID");
+            ui.add(egui::TextEdit::singleline(&mut self.usb_pid).desired_width(40.0));
+            ui.label("If");
+            ui.add(egui::DragValue::new(&mut self.usb_interface).range(0..=31));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Endpoint (hex)");
+            ui.add(egui::TextEdit::singleline(&mut self.usb_endpoint).desired_width(30.0));
+            ui.radio_value(&mut self.usb_kind, UsbEndpointKind::Bulk, "Bulk");
+            ui.radio_value(&mut self.usb_kind, UsbEndpointKind::Interrupt, "Interrupt");
+        });
+        if ui.button("Open USB").clicked() {
+            let hex = |s: &str| u16::from_str_radix(s.trim_start_matches("0x"), 16);
+            match (
+                hex(&self.usb_vid),
+                hex(&self.usb_pid),
+                u8::from_str_radix(self.usb_endpoint.trim_start_matches("0x"), 16),
+            ) {
+                (Ok(vendor_id), Ok(product_id), Ok(endpoint)) => {
+                    self.start(SourceKind::Usb {
+                        vendor_id,
+                        product_id,
+                        interface: self.usb_interface,
+                        endpoint,
+                        kind: self.usb_kind,
+                    });
+                }
+                _ => {
+                    self.status =
+                        "usb: VID/PID/endpoint must be hex (e.g. VID 0483, PID 3753, endpoint 81)"
+                            .to_string();
+                }
+            }
         }
 
         ui.add_space(6.0);

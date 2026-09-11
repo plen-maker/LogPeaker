@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 
 pub use benchpeek_plugin::{Decoder, Sample, SignalMeta};
 
+mod kicad;
+pub use kicad::{Net, NetList, NetNode};
+
 /// Default number of points kept per signal.
 pub const DEFAULT_CAPACITY: usize = 8192;
 

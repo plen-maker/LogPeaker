@@ -7,8 +7,8 @@ use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 
 use benchpeek_core::{
-    evaluate, Diagnosis, Health, LogLevel, LogStore, Recorder, Rule, RuleSet, SequenceRunner,
-    SignalStore, StepStatus, TestSequence, TestStep, DEFAULT_CAPACITY,
+    evaluate, Diagnosis, Health, LogLevel, LogStore, NetList, Recorder, Rule, RuleSet,
+    SequenceRunner, SignalStore, StepStatus, TestSequence, TestStep, DEFAULT_CAPACITY,
 };
 use benchpeek_plugin::Decoder;
 use eframe::egui::{self, Color32, RichText};
@@ -35,6 +35,7 @@ enum CentralView {
     Logs,
     History,
     Tests,
+    Kicad,
 }
 
 /// Top-level app mode: live board diagnostics vs. the Yocto build
@@ -92,6 +93,12 @@ pub struct BenchpeekApp {
     loaded_sequence: Option<TestSequence>,
     sequence_runner: Option<SequenceRunner>,
     sequence_status: String,
+
+    // KiCad netlist import: net <-> live-signal cross-highlight.
+    kicad_path: String,
+    netlist: Option<NetList>,
+    kicad_status: String,
+    highlighted_signal: Option<String>,
 
     // View state.
     window_secs: f64,
@@ -152,6 +159,10 @@ impl Default for BenchpeekApp {
             loaded_sequence: None,
             sequence_runner: None,
             sequence_status: "no sequence loaded".to_string(),
+            kicad_path: "kicad/example.net".to_string(),
+            netlist: None,
+            kicad_status: "no netlist loaded".to_string(),
+            highlighted_signal: None,
             window_secs: 30.0,
             visible: HashMap::new(),
             paused: false,
@@ -1065,6 +1076,75 @@ impl BenchpeekApp {
         });
     }
 
+    fn load_kicad(&mut self) {
+        match NetList::from_file(&self.kicad_path) {
+            Ok(nl) => {
+                self.kicad_status = format!("loaded {} net(s)", nl.nets.len());
+                self.netlist = Some(nl);
+            }
+            Err(e) => {
+                self.kicad_status = format!("load error: {e:#}");
+                self.netlist = None;
+            }
+        }
+    }
+
+    fn kicad_ui(&mut self, ui: &mut egui::Ui) {
+        ui.heading("KiCad netlist");
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("File");
+            ui.text_edit_singleline(&mut self.kicad_path);
+            if ui.button("Load").clicked() {
+                self.load_kicad();
+            }
+        });
+        ui.label(RichText::new(&self.kicad_status).weak());
+        ui.label(
+            RichText::new("A net whose name matches a live signal is cross-highlighted: click it, then check the Plot tab.")
+                .weak()
+                .small(),
+        );
+        ui.separator();
+
+        let Some(netlist) = &self.netlist else {
+            return;
+        };
+        if self.highlighted_signal.is_some() && ui.button("Clear highlight").clicked() {
+            self.highlighted_signal = None;
+        }
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for net in &netlist.nets {
+                let live = self.store.signals.contains_key(&net.name);
+                let color = if live {
+                    theme::ACCENT
+                } else {
+                    theme::WEAK_TEXT
+                };
+                let selected = self.highlighted_signal.as_deref() == Some(net.name.as_str());
+                let pins = net
+                    .nodes
+                    .iter()
+                    .map(|n| format!("{}.{}", n.reference, n.pin))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                ui.horizontal(|ui| {
+                    if ui
+                        .selectable_label(selected, RichText::new(&net.name).color(color))
+                        .clicked()
+                        && live
+                    {
+                        self.highlighted_signal = Some(net.name.clone());
+                    }
+                    ui.label(RichText::new(format!("({pins})")).weak().small());
+                    if live {
+                        ui.label(RichText::new("live").small().color(theme::OK));
+                    }
+                });
+            }
+        });
+    }
+
     fn yocto_ui(&mut self, ui: &mut egui::Ui) {
         egui::Panel::left("yocto_controls")
             .resizable(true)
@@ -1218,10 +1298,16 @@ impl BenchpeekApp {
                     continue;
                 };
                 let color = health_color(self.health_of(&name));
+                let highlighted = self.highlighted_signal.as_deref() == Some(name.as_str());
                 ui.horizontal(|ui| {
                     let vis = self.visible.entry(name.clone()).or_insert(true);
                     ui.checkbox(vis, "");
-                    ui.colored_label(color, &name);
+                    let mut text = RichText::new(&name).color(color);
+                    if highlighted {
+                        text = text.strong();
+                        ui.label(RichText::new("\u{25C0}").color(theme::ACCENT));
+                    }
+                    ui.label(text);
                 });
                 ui.label(
                     RichText::new(format!("    {val:.3} {unit}"))
@@ -1317,7 +1403,13 @@ impl BenchpeekApp {
                         .filter(|p| p[0] >= t_min)
                         .map(|p| [p[0], p[1]])
                         .collect();
-                    plot_ui.line(Line::new(sig.meta.name.clone(), pts).color(color));
+                    let mut line = Line::new(sig.meta.name.clone(), pts).color(color);
+                    // Cross-highlight from the KiCad tab: a net whose name
+                    // matched this signal was clicked there.
+                    if self.highlighted_signal.as_deref() == Some(sig.meta.name.as_str()) {
+                        line = line.width(4.0).highlight(true);
+                    }
+                    plot_ui.line(line);
                 }
             });
     }
@@ -1378,6 +1470,7 @@ impl eframe::App for BenchpeekApp {
                             "History",
                         );
                         ui.selectable_value(&mut self.central_view, CentralView::Tests, "Tests");
+                        ui.selectable_value(&mut self.central_view, CentralView::Kicad, "KiCad");
                     });
                     ui.separator();
                     match self.central_view {
@@ -1385,6 +1478,7 @@ impl eframe::App for BenchpeekApp {
                         CentralView::Logs => self.logs_ui(ui),
                         CentralView::History => self.history_ui(ui),
                         CentralView::Tests => self.sequence_ui(ui),
+                        CentralView::Kicad => self.kicad_ui(ui),
                     }
                 });
             }

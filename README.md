@@ -149,6 +149,26 @@ is driven once per frame off the same `SignalStore` the plot and rule
 evaluator already read, so it works against any source (serial, CAN,
 simulated, replay) with no extra wiring.
 
+## KiCad netlist import
+
+The **KiCad** tab imports a netlist (`.net`, as written by Eeschema/KiCad's
+"Export Netlist" - the same s-expression format is embedded in
+`.kicad_pcb`) and cross-highlights a net against a live signal by name.
+Set **File** to a `.net` (`kicad/example.net` is a worked example, again
+against **Start simulated board** - it has `VBAT`/`RPM`/`TEMP` nets plus a
+couple that aren't wired to anything the simulator emits, e.g. `GND`), then
+**Load**. Nets are listed with every pin on them (`U1.3, R1.1, ...`); one
+whose name exactly matches a live signal is marked **live** and clickable -
+click it and its signal's line gets thicker and highlighted on the Plot tab
+(and marked in the signal table), so you can answer "which trace on this
+plot is net X" without a schematic viewer.
+
+This parses the netlist's `(nets ...)` section (`NetList` in
+`benchpeek-core`, via a small hand-rolled s-expression reader - not a full
+KiCad project importer) rather than rendering the schematic or PCB itself;
+there's no visual schematic in benchpeek to click a net on, so highlighting
+runs net name -> signal name instead of net geometry -> plot pixel.
+
 ## Roadmap
 
 - Plugin SDK docs
@@ -159,7 +179,6 @@ simulated, replay) with no extra wiring.
 - USB transport beyond USB-serial (raw bulk/interrupt endpoints for a
   non-CDC device) - Serial already covers USB-CDC boards, CAN is covered
   above
-- KiCad project import with net ↔ live-signal cross-highlight
 
 ## Connection guide
 

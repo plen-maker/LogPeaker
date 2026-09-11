@@ -92,6 +92,47 @@ BO_ 512 TELEMETRY: 8 ECU
     assert_eq!(out[0].value, 50.0);
 }
 
+/// DBC files encode an extended (29-bit) CAN ID's `BO_` with bit 31 set,
+/// to disambiguate it from a standard ID sharing the same numeric value -
+/// but the candump-style line the CAN source emits carries the raw ID with
+/// that bit already stripped (`Frame::raw_id()` masks off the EFF/RTR/ERR
+/// flags). The decoder has to undo the DBC's own encoding to match, or
+/// every signal on an extended-ID bus (e.g. J1939, all-extended) would
+/// silently never decode.
+#[test]
+fn matches_extended_ids_against_the_dbcs_flagged_encoding() {
+    let path = plugin_path();
+    assert!(path.exists(), "missing {path:?}");
+
+    // 0x18FEF132 is the raw 29-bit ID; DBC encodes it with bit 31 set.
+    let dbc = r#"
+BO_ 2566844722 ENGINE_SPEED: 8 ECU
+ SG_ SPEED : 0|16@1+ (1,0) [0|10000] "rpm" ECU
+"#;
+    let mut wasm = WasmDecoder::load_with_config(&path, Some(dbc))
+        .expect("load can-dbc-py component with an extended-ID DBC");
+
+    // The line as benchpeek-app's CAN source actually renders this frame
+    // (source.rs::can_frame_line, fed by Frame::raw_id()): no flag bit.
+    let out = wasm.decode(b"18FEF132#D204000000000000\n", 0.0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].signal, "SPEED");
+    assert_eq!(out[0].value, 1234.0);
+}
+
+/// `Some("")` (a config file that exists but is empty) must not be
+/// confused with `None` (no config given at all) - it should parse to
+/// zero signals, not silently fall back to the baked-in worked example.
+#[test]
+fn empty_config_is_not_treated_as_no_config() {
+    let path = plugin_path();
+    assert!(path.exists(), "missing {path:?}");
+
+    let mut wasm = WasmDecoder::load_with_config(&path, Some("")).expect("load with empty config");
+    assert!(wasm.signals().is_empty());
+    assert!(wasm.decode(test_frame_line(), 0.0).is_empty());
+}
+
 #[test]
 fn buffers_partial_lines_across_calls() {
     let path = plugin_path();

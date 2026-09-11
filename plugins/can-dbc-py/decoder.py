@@ -54,7 +54,13 @@ def parse_dbc(text):
         line = raw_line.strip()
         if line.startswith("BO_ "):
             # BO_ <id> <name>: <dlc> <sender>
-            current_id = int(line[len("BO_ ") :].split()[0])
+            # DBC convention sets bit 31 on an extended (29-bit) CAN ID to
+            # distinguish it from a standard ID with the same numeric
+            # value; mask it off to get the raw ID, matching SocketCAN's
+            # raw_id() (which already strips the EFF/RTR/ERR flag bits
+            # before this decoder ever sees the candump line's <id>#...).
+            # A no-op for standard IDs, which are always below 0x800.
+            current_id = int(line[len("BO_ ") :].split()[0]) & 0x1FFFFFFF
             messages[current_id] = []
         elif line.startswith("SG_ ") and current_id is not None:
             # SG_ <name> : <start>|<length>@<order><sign> (<factor>,<offset>) [<min>|<max>] "<unit>" <receiver>
@@ -116,7 +122,11 @@ def extract_raw(data, sig):
 class Decoder:
     def __init__(self, config):
         self.buf = bytearray()
-        self.messages = parse_dbc(config if config else DBC_TEXT)
+        # `is not None`, not truthiness: an empty-but-present config (e.g.
+        # an empty .dbc file) should parse to zero signals, not silently
+        # fall back to the worked example as if no config were given at
+        # all - only a real `None` means "no config".
+        self.messages = parse_dbc(config if config is not None else DBC_TEXT)
 
     def name(self):
         return "can-dbc-py"

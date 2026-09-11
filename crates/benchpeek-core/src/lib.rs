@@ -8,6 +8,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
 use anyhow::Result;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 pub use benchpeek_plugin::{Decoder, Sample, SignalMeta};
@@ -159,13 +160,23 @@ pub struct RuleSet {
     pub rules: Vec<Rule>,
 }
 
+/// Parses TOML text into `T`. Shared by every `*_toml_str` method below.
+fn toml_from_str<T: DeserializeOwned>(s: &str) -> Result<T> {
+    Ok(toml::from_str(s)?)
+}
+
+/// Reads and parses a TOML file. Shared by every `*_toml_file` method below.
+fn toml_from_file<T: DeserializeOwned>(path: impl AsRef<Path>) -> Result<T> {
+    toml_from_str(&std::fs::read_to_string(path)?)
+}
+
 impl RuleSet {
     pub fn from_toml_str(s: &str) -> Result<Self> {
-        Ok(toml::from_str(s)?)
+        toml_from_str(s)
     }
 
     pub fn from_toml_file(path: impl AsRef<Path>) -> Result<Self> {
-        Self::from_toml_str(&std::fs::read_to_string(path)?)
+        toml_from_file(path)
     }
 }
 
@@ -336,7 +347,9 @@ pub struct TestStep {
 }
 
 impl TestStep {
-    fn display_label(&self) -> &str {
+    /// `label` if set, otherwise the signal name - what a report/UI should
+    /// call this step.
+    pub fn display_label(&self) -> &str {
         self.label.as_deref().unwrap_or(&self.signal)
     }
 }
@@ -352,11 +365,11 @@ pub struct TestSequence {
 
 impl TestSequence {
     pub fn from_toml_str(s: &str) -> Result<Self> {
-        Ok(toml::from_str(s)?)
+        toml_from_str(s)
     }
 
     pub fn from_toml_file(path: impl AsRef<Path>) -> Result<Self> {
-        Self::from_toml_str(&std::fs::read_to_string(path)?)
+        toml_from_file(path)
     }
 }
 
@@ -455,7 +468,17 @@ impl SequenceRunner {
         let started = *self.outcomes[idx].started_t.get_or_insert(t);
         self.outcomes[idx].status = StepStatus::Running;
 
-        let value = store.signals.get(&step.signal).and_then(|s| s.last());
+        // A signal whose last sample is older than this is treated as
+        // "no data", not as "still holding its last value" - otherwise a
+        // step that happened to be in range right before the transport
+        // went quiet (cable pulled, board hung) would sit there PASSED
+        // forever on a frozen reading, defeating the point of a power-on
+        // self-test.
+        const STALE_AFTER_SECS: f64 = 3.0;
+        let value = store.signals.get(&step.signal).and_then(|s| {
+            let last_t = s.last_t()?;
+            (t - last_t <= STALE_AFTER_SECS).then(|| s.last()).flatten()
+        });
         let in_range = value.is_some_and(|v| {
             let out_low = step.min.is_some_and(|m| v < m);
             let out_high = step.max.is_some_and(|m| v > m);
@@ -572,6 +595,44 @@ mod sequence_tests {
         assert_eq!(runner.outcomes()[0].status, StepStatus::Running);
         runner.tick(&store_with("VBAT", 3.6, 12.5), 3.6);
         assert_eq!(runner.outcomes()[0].status, StepStatus::Passed);
+    }
+
+    #[test]
+    fn stale_value_does_not_count_as_in_range() {
+        let seq = TestSequence {
+            name: "t".into(),
+            steps: vec![TestStep {
+                signal: "VBAT".into(),
+                min: Some(12.0),
+                max: Some(13.0),
+                hold_secs: 5.0,
+                timeout_secs: 20.0,
+                label: None,
+            }],
+        };
+        let mut runner = SequenceRunner::start(seq);
+        // One fresh sample at t=0, in range.
+        let mut store = SignalStore::new(64);
+        store.ingest(&Sample::new("VBAT", 12.5, 0.0));
+        runner.tick(&store, 0.0);
+        assert_eq!(runner.outcomes()[0].status, StepStatus::Running);
+
+        // No further samples arrive (as if the transport went quiet), but
+        // time keeps advancing. Without the staleness check this frozen
+        // 12.5 would still read as "in range" and the step would falsely
+        // pass at t=5 despite total silence from the board.
+        runner.tick(&store, 10.0);
+        assert_eq!(
+            runner.outcomes()[0].status,
+            StepStatus::Running,
+            "a stale reading must not count toward the hold"
+        );
+        runner.tick(&store, 20.0);
+        assert_eq!(
+            runner.outcomes()[0].status,
+            StepStatus::Failed,
+            "should time out rather than pass on stale data"
+        );
     }
 
     #[test]

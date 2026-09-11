@@ -90,7 +90,12 @@ impl SExpr {
                             break;
                         }
                         Some(_) => items.push(Self::parse_expr(chars)?),
-                        None => break, // unterminated input: tolerate rather than fail
+                        // A netlist is a complete file on disk, never a
+                        // partial stream - an unclosed list means truncated
+                        // or corrupt input, so surface that as an error
+                        // instead of silently returning whatever nets were
+                        // parsed before the cutoff.
+                        None => return None,
                     }
                 }
                 Some(SExpr::List(items))
@@ -222,10 +227,11 @@ mod tests {
     }
 
     #[test]
-    fn tolerates_trailing_whitespace_and_unterminated_input() {
+    fn rejects_blank_and_truncated_input() {
         assert!(NetList::from_netlist_str("   \n\t  ").is_err());
-        let nl = NetList::from_netlist_str("(export (nets (net (name \"X\")").unwrap();
-        assert_eq!(nl.nets.len(), 1);
-        assert_eq!(nl.nets[0].name, "X");
+        // A netlist file that got cut off mid-write (or corrupted) must
+        // surface as an error, not silently return whatever nets happened
+        // to be parsed before the missing closing parens.
+        assert!(NetList::from_netlist_str("(export (nets (net (name \"X\")").is_err());
     }
 }

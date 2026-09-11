@@ -132,6 +132,23 @@ The **History** tab (next to Plot/Logs) is a timeline of health *transitions*
 cleared — separate from the Diagnosis panel, which only ever shows the
 current snapshot.
 
+## Test sequences
+
+The **Tests** tab runs a scripted pass/fail check against live signals -
+useful as a repeatable power-on self-test, or to regression-check that a
+simulated/replayed fault still actually fires. Set **File** to a `.toml`
+sequence (`sequences/example.toml` is a worked example against **Start
+simulated board**), **Load**, then **Run**.
+
+A sequence is an ordered list of steps (`TestSequence`/`TestStep` in
+`benchpeek-core`); each holds one signal within `[min, max]` continuously
+for `hold_secs` before passing, and fails the whole sequence if that hasn't
+happened within `timeout_secs` of becoming the active step - later steps
+stay Pending rather than starting out of order. The runner (`SequenceRunner`)
+is driven once per frame off the same `SignalStore` the plot and rule
+evaluator already read, so it works against any source (serial, CAN,
+simulated, replay) with no extra wiring.
+
 ## Roadmap
 
 - Plugin SDK docs
@@ -143,7 +160,6 @@ current snapshot.
   non-CDC device) - Serial already covers USB-CDC boards, CAN is covered
   above
 - KiCad project import with net ↔ live-signal cross-highlight
-- Scripted test sequences with pass/fail reports
 
 ## Connection guide
 

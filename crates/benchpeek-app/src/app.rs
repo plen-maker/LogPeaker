@@ -7,8 +7,8 @@ use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 
 use benchpeek_core::{
-    evaluate, Diagnosis, Health, LogLevel, LogStore, Recorder, Rule, RuleSet, SignalStore,
-    DEFAULT_CAPACITY,
+    evaluate, Diagnosis, Health, LogLevel, LogStore, Recorder, Rule, RuleSet, SequenceRunner,
+    SignalStore, StepStatus, TestSequence, TestStep, DEFAULT_CAPACITY,
 };
 use benchpeek_plugin::Decoder;
 use eframe::egui::{self, Color32, RichText};
@@ -34,6 +34,7 @@ enum CentralView {
     Plot,
     Logs,
     History,
+    Tests,
 }
 
 /// Top-level app mode: live board diagnostics vs. the Yocto build
@@ -84,6 +85,13 @@ pub struct BenchpeekApp {
     diag_history: VecDeque<DiagEvent>,
     prev_health: HashMap<String, Health>,
     app_start: Instant,
+
+    // Scripted test sequences: a loaded sequence awaits Run; a runner is
+    // present from Run until stop/reload.
+    sequence_path: String,
+    loaded_sequence: Option<TestSequence>,
+    sequence_runner: Option<SequenceRunner>,
+    sequence_status: String,
 
     // View state.
     window_secs: f64,
@@ -140,6 +148,10 @@ impl Default for BenchpeekApp {
             diag_history: VecDeque::new(),
             prev_health: HashMap::new(),
             app_start: Instant::now(),
+            sequence_path: "sequences/example.toml".to_string(),
+            loaded_sequence: None,
+            sequence_runner: None,
+            sequence_status: "no sequence loaded".to_string(),
             window_secs: 30.0,
             visible: HashMap::new(),
             paused: false,
@@ -220,6 +232,22 @@ fn list_usb_ports() -> Vec<String> {
 
 fn list_can_interfaces() -> Vec<String> {
     socketcan::available_interfaces().unwrap_or_default()
+}
+
+/// One-line description of a test step for the Tests panel, e.g.
+/// `battery settles: VBAT in [12.0, 13.0] for 1.0s (timeout 5.0s)`.
+fn step_summary(step: &TestStep) -> String {
+    let range = match (step.min, step.max) {
+        (Some(min), Some(max)) => format!("[{min}, {max}]"),
+        (Some(min), None) => format!(">= {min}"),
+        (None, Some(max)) => format!("<= {max}"),
+        (None, None) => "any value".to_string(),
+    };
+    let label = step.label.as_deref().unwrap_or(&step.signal);
+    format!(
+        "{label}: {} in {range} for {:.1}s (timeout {:.1}s)",
+        step.signal, step.hold_secs, step.timeout_secs
+    )
 }
 
 fn health_color(h: Health) -> Color32 {
@@ -496,6 +524,50 @@ impl BenchpeekApp {
                 self.diag_history.pop_front();
             }
             self.diag_history.push_back(e);
+        }
+    }
+
+    fn load_sequence(&mut self) {
+        match TestSequence::from_toml_file(&self.sequence_path) {
+            Ok(seq) => {
+                self.sequence_status =
+                    format!("loaded \"{}\" ({} steps)", seq.name, seq.steps.len());
+                self.loaded_sequence = Some(seq);
+                self.sequence_runner = None;
+            }
+            Err(e) => {
+                self.sequence_status = format!("load error: {e:#}");
+                self.loaded_sequence = None;
+                self.sequence_runner = None;
+            }
+        }
+    }
+
+    fn start_sequence(&mut self) {
+        if let Some(seq) = &self.loaded_sequence {
+            self.sequence_runner = Some(SequenceRunner::start(seq.clone()));
+            self.sequence_status = "running".to_string();
+        }
+    }
+
+    /// Advances the active runner, if any, against the current store -
+    /// called every frame alongside rule evaluation so a step's timeout
+    /// fires even when its signal has gone quiet rather than out of range.
+    fn tick_sequence(&mut self) {
+        let Some(runner) = &mut self.sequence_runner else {
+            return;
+        };
+        if runner.is_done() {
+            return;
+        }
+        let now = self.app_start.elapsed().as_secs_f64();
+        runner.tick(&self.store, now);
+        if runner.is_done() {
+            self.sequence_status = match runner.overall_passed() {
+                Some(true) => "PASSED".to_string(),
+                Some(false) => "FAILED".to_string(),
+                None => self.sequence_status.clone(),
+            };
         }
     }
 
@@ -919,6 +991,80 @@ impl BenchpeekApp {
             });
     }
 
+    fn sequence_ui(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Test sequence");
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("File");
+            ui.text_edit_singleline(&mut self.sequence_path);
+            if ui.button("Load").clicked() {
+                self.load_sequence();
+            }
+        });
+        let can_run = self.loaded_sequence.is_some();
+        ui.horizontal(|ui| {
+            if ui.add_enabled(can_run, egui::Button::new("Run")).clicked() {
+                self.start_sequence();
+            }
+            if ui
+                .add_enabled(self.sequence_runner.is_some(), egui::Button::new("Reset"))
+                .clicked()
+            {
+                self.sequence_runner = None;
+                self.sequence_status = "no sequence loaded".to_string();
+                if let Some(seq) = &self.loaded_sequence {
+                    self.sequence_status =
+                        format!("loaded \"{}\" ({} steps)", seq.name, seq.steps.len());
+                }
+            }
+        });
+        ui.label(RichText::new(&self.sequence_status).weak());
+        ui.separator();
+
+        let Some(runner) = &self.sequence_runner else {
+            if let Some(seq) = &self.loaded_sequence {
+                for step in &seq.steps {
+                    ui.label(
+                        RichText::new(format!("\u{25CB} {}", step_summary(step)))
+                            .color(theme::WEAK_TEXT),
+                    );
+                }
+            }
+            return;
+        };
+
+        if let Some(passed) = runner.overall_passed() {
+            let (text, color) = if passed {
+                ("PASS", theme::OK)
+            } else {
+                ("FAIL", theme::FAULT)
+            };
+            ui.label(RichText::new(text).strong().size(20.0).color(color));
+            ui.separator();
+        }
+
+        let seq = self.loaded_sequence.as_ref();
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (i, outcome) in runner.outcomes().iter().enumerate() {
+                let label = seq
+                    .and_then(|s| s.steps.get(i))
+                    .map(step_summary)
+                    .unwrap_or_default();
+                let (mark, color) = match outcome.status {
+                    StepStatus::Pending => ("\u{25CB}", theme::WEAK_TEXT),
+                    StepStatus::Running => ("\u{25B7}", theme::ACCENT),
+                    StepStatus::Passed => ("\u{2713}", theme::OK),
+                    StepStatus::Failed => ("\u{2717}", theme::FAULT),
+                };
+                let mut line = format!("{mark} {label}");
+                if !outcome.detail.is_empty() {
+                    line.push_str(&format!(" - {}", outcome.detail));
+                }
+                ui.label(RichText::new(line).monospace().color(color));
+            }
+        });
+    }
+
     fn yocto_ui(&mut self, ui: &mut egui::Ui) {
         egui::Panel::left("yocto_controls")
             .resizable(true)
@@ -1186,6 +1332,7 @@ impl eframe::App for BenchpeekApp {
         self.pump_build_log();
         self.diagnoses = evaluate(&self.rules, &self.store);
         self.track_diag_history();
+        self.tick_sequence();
 
         if self.welcome.visible {
             if self.welcome_scan.elapsed() >= Duration::from_secs(1) {
@@ -1230,12 +1377,14 @@ impl eframe::App for BenchpeekApp {
                             CentralView::History,
                             "History",
                         );
+                        ui.selectable_value(&mut self.central_view, CentralView::Tests, "Tests");
                     });
                     ui.separator();
                     match self.central_view {
                         CentralView::Plot => self.plot_ui(ui),
                         CentralView::Logs => self.logs_ui(ui),
                         CentralView::History => self.history_ui(ui),
+                        CentralView::Tests => self.sequence_ui(ui),
                     }
                 });
             }

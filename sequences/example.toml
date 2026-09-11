@@ -1,0 +1,39 @@
+# benchpeek test sequence. Load it from the Tests tab, then Run.
+#
+# Each [[step]] watches one signal's latest value against [min, max] and
+# passes once it has stayed in range continuously for `hold_secs`; a step
+# that hasn't passed within `timeout_secs` of becoming active fails the
+# whole sequence (later steps stay Pending - they never get a chance to
+# run). `min`/`max` are both optional, `label` defaults to the signal name.
+#
+# This one is written against **Start simulated board**: the first two
+# steps just confirm nominal telemetry is flowing, and the third
+# deliberately waits for the simulator's scripted battery-sag fault
+# (VBAT decays past 11.5 V starting at t=15s) - a good pattern for
+# regression-checking that a fault-injection path still actually fires,
+# the same way you'd want to confirm a protection circuit still trips.
+
+name = "simulated board power-on"
+
+[[step]]
+signal = "RPM"
+label = "RPM nominal"
+min = 700.0
+max = 1000.0
+hold_secs = 1.0
+timeout_secs = 5.0
+
+[[step]]
+signal = "VBAT"
+label = "battery healthy at startup"
+min = 12.0
+max = 13.0
+hold_secs = 1.0
+timeout_secs = 5.0
+
+[[step]]
+signal = "VBAT"
+label = "battery sag fault appears"
+max = 11.5
+hold_secs = 1.0
+timeout_secs = 30.0

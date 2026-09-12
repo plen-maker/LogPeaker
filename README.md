@@ -204,16 +204,23 @@ runs net name -> signal name instead of net geometry -> plot pixel.
 
 ## Connection guide
 
-Launch opens a skippable, animated connection guide: a stylized STM32MP257F-DK
-board overview zooms toward CN21 (USB-C ST-LINK/power), then prompts “Plug in
-the device”. Reduce motion freezes the camera at the connector. Replay or
-reopen it using **Connection guide** in the top bar. **Enable auto-connect**
-uses the existing USB-serial source discovery; it does not identify the board
-model or guarantee a telemetry stream. A Linux console needs a telemetry
-producer to supply the decoder's KEY=VALUE samples.
+Launch opens a skippable, 8 s / 60 fps animation of the actual
+STM32MP257F-DK (MB1605C): an overhead-to-port camera move onto CN15 (USB-C
+OTG/device), after which the board fades into transparent context while
+the port and cable stay opaque and a cyan contour highlights where to plug
+in. Reduce motion holds on the final frame instead of animating. Replay or
+reopen it using **Connection guide** in the top bar. **Enable serial
+auto-connect** uses the existing USB-serial source discovery; it does not
+identify the board model or guarantee a telemetry stream. A Linux console
+needs a telemetry producer to supply the decoder's KEY=VALUE samples.
 
-This is a native egui vector illustration, not a dimensionally accurate CAD
-model or a Blender render. Connector roles reference ST's
+Unlike the hand-drawn vector illustration this replaced, it's rendered
+from a Blender master built on real board geometry (the port comes from
+ST's own Altium data), baked to 480 JPEG frames at 960×540 in a small
+custom container (`assets/board_intro.bpk` - see
+[`assets/README.md`](crates/benchpeek-app/assets/README.md) for the exact
+binary layout) and decoded on demand at runtime, not rendered live in 3D.
+Connector roles reference ST's
 [UM3385, figure 4](https://www.st.com/resource/en/user_manual/um3385-discovery-kit-with-stm32mp257f-mpu-stmicroelectronics.pdf).
 
 ## Yocto files and sync

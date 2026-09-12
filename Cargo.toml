@@ -25,3 +25,20 @@ default-members = [
 [workspace.package]
 edition = "2021"
 license = "MIT OR Apache-2.0"
+
+# Keep intro frame decoding within the 60 fps budget in normal dev runs.
+
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+
+[profile.dev.package.zune-core]
+opt-level = 3
+
+[profile.dev.package.epaint]
+opt-level = 3
+
+[profile.dev.package.ecolor]
+opt-level = 3

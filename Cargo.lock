@@ -474,6 +474,7 @@ dependencies = [
  "egui",
  "egui_plot",
  "fastrand",
+ "image",
  "nusb",
  "serialport",
  "socketcan",
@@ -2098,6 +2099,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

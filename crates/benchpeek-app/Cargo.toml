@@ -20,7 +20,14 @@ serialport = "4"
 eframe = "0.36.1"
 egui = "0.36.1"
 egui_plot = "0.37.0"
-socketcan = { version = "4.0.0", features = ["enumerate"] }
 nusb = "0.2.7"
 
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+socketcan = { version = "4.0.0", features = ["enumerate"] }
+
+[dependencies.chrono]
+version = "0.4"
+default-features = false
+features = ["clock"]

@@ -266,8 +266,13 @@ fn list_usb_ports() -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[cfg(target_os = "linux")]
 fn list_can_interfaces() -> Vec<String> {
     socketcan::available_interfaces().unwrap_or_default()
+}
+#[cfg(not(target_os = "linux"))]
+fn list_can_interfaces() -> Vec<String> {
+    Vec::new()
 }
 
 fn list_usb_devices() -> Vec<UsbDeviceEntry> {

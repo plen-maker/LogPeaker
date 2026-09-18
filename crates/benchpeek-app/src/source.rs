@@ -14,6 +14,7 @@ use anyhow::{anyhow, Context, Result};
 use benchpeek_core::{classify_line, load_replay, Decoder, LogEvent, Sample};
 use nusb::transfer::{Bulk, BulkOrInterrupt, In, Interrupt, TransferError};
 use nusb::MaybeFuture;
+#[cfg(target_os = "linux")]
 use socketcan::{CanSocket, EmbeddedFrame, Frame, ShouldRetry, Socket};
 
 /// Which transfer type a raw USB endpoint uses - fixed by the device's own
@@ -250,6 +251,12 @@ fn run_can(
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
+fn can_session(_i: &str, _d: &mut dyn Decoder, _tx: &Sender<Sample>, _stop: &AtomicBool, _start: Instant) -> Result<()> {
+    anyhow::bail!("SocketCAN is Linux-only")
+}
+
+#[cfg(target_os = "linux")]
 fn can_session(
     interface: &str,
     decoder: &mut dyn Decoder,

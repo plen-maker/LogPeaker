@@ -90,7 +90,7 @@ impl Workspace {
         if dim > 0 {
             ctx.layer_painter(LayerId::new(Order::Middle, Id::new("dim_paint"))).rect_filled(full, 0.0, Color32::from_black_alpha(dim));
         }
-        let anything_open = self.cc_open || self.device_menu || self.ctx_menu.is_some() || self.quick_look.is_some() || self.confirm_delete.is_some();
+        let anything_open = self.guide_open || self.cc_open || self.device_menu || self.ctx_menu.is_some() || self.quick_look.is_some() || self.confirm_delete.is_some();
         if anything_open {
             let mut close = false;
             egui::Area::new(Id::new("backdrop")).order(Order::Middle).fixed_pos(full.min).constrain(false).show(ctx, |ui| {
@@ -98,7 +98,9 @@ impl Workspace {
                 close = r.clicked();
             });
             if close {
-                if self.confirm_delete.is_some() {
+                if self.guide_open {
+                    self.guide_open = false;
+                } else if self.confirm_delete.is_some() {
                     self.confirm_delete = None;
                 } else if self.quick_look.is_some() {
                     self.quick_look = None;
@@ -115,6 +117,7 @@ impl Workspace {
         self.context_menu_ui(ctx, full, ctx_t, now);
         self.quick_look_ui(ctx, full, ql_t, now);
         self.confirm_ui(ctx, full, conf_t, now);
+        self.guide_ui(ctx, full, now);
         self.toast_ui(ctx, full, now);
     }
 
@@ -152,7 +155,7 @@ impl Workspace {
             }
             3 => {
                 self.device_menu = false;
-                self.show_toast("Adding devices is unavailable", "The real backend is not wired in this demo build", false, now);
+                self.open_guide(now);
             }
             _ => {}
         }
@@ -466,6 +469,64 @@ impl Workspace {
                 self.toast_t.set(0.0, now, 200.0);
                 self.cc_open = false;
                 self.go(Page::Sessions, now);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Workspace {
+    /// "Connect a device" guide: plays the Blender-rendered CN15 plug-in movie.
+    fn guide_ui(&mut self, ctx: &Context, full: Rect, now: f64) {
+        self.guide_t.set(if self.guide_open { 1.0 } else { 0.0 }, now, 220.0);
+        let t = self.guide_t.get(now);
+        if t < 0.002 {
+            return;
+        }
+        // Decode the frame for the current time (held on the last frame; reduce-motion shows it directly).
+        let secs = if reduce_motion() { 99.0 } else { (now - self.guide_t0) as f32 };
+        let frame = ((secs * crate::onboarding::FPS) as usize).min(crate::onboarding::FRAME_COUNT - 1);
+        if self.guide_frame != Some(frame) {
+            self.guide_frame = Some(frame);
+            if let Ok(img) = crate::onboarding::decode_frame(frame) {
+                match &mut self.guide_tex {
+                    Some(tex) => tex.set(img, egui::TextureOptions::LINEAR),
+                    None => self.guide_tex = Some(ctx.load_texture("guide_movie", img, egui::TextureOptions::LINEAR)),
+                }
+            }
+        }
+        let (w, h) = (760.0, 620.0);
+        let rect = Rect::from_center_size(full.center() + Vec2::new(SIDEBAR_W_F / 2.0, 0.0), Vec2::new(w, h));
+        let tex = self.guide_tex.as_ref().map(|t| t.id());
+        let mut act = 0;
+        layer(ctx, "guide", Order::Foreground, t, rect.center(), 0.97, 0.0, |ui| {
+            panel(ui.painter(), rect, 20.0, RAISED);
+            text(ui.painter(), Pos2::new(rect.left() + 32.0, rect.top() + 36.0), Align2::LEFT_CENTER, "Connect a device", font(18.0, "inter_medium"), TEXT);
+            if icon_button(ui, Id::new("guide_close"), Pos2::new(rect.right() - 34.0, rect.top() + 36.0), ic::X, 19.0, TEXT2).clicked() {
+                act = 1;
+            }
+            let movie = Rect::from_min_size(Pos2::new(rect.left() + 20.0, rect.top() + 72.0), Vec2::new(w - 40.0, (w - 40.0) * 540.0 / 960.0));
+            ui.painter().rect_filled(movie, cr(12.0), Color32::BLACK);
+            if let Some(id) = tex {
+                ui.painter().add(egui::epaint::RectShape::filled(movie, cr(12.0), Color32::WHITE).with_texture(id, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0))));
+            }
+            ui.painter().rect_stroke(movie, cr(12.0), Stroke::new(1.0, border()), egui::StrokeKind::Inside);
+            let ty = movie.bottom() + 26.0;
+            text(ui.painter(), Pos2::new(rect.left() + 32.0, ty), Align2::LEFT_CENTER, "Connect your computer to CN15 - USB-C OTG / device.", font(14.0, "inter_medium"), TEXT);
+            text(ui.painter(), Pos2::new(rect.left() + 32.0, ty + 24.0), Align2::LEFT_CENTER, "The other connectors on the board are inputs (power, ST-LINK). Automatic device detection is not wired in this demo build.", font(12.0, "inter"), TEXT3);
+            let by = rect.bottom() - 24.0 - 44.0;
+            if ghost_button(ui, Id::new("guide_replay"), Rect::from_min_size(Pos2::new(rect.right() - 32.0 - 108.0 - 12.0 - 108.0, by), Vec2::new(108.0, 44.0)), "Replay", Some(ic::REFRESH_CW)).clicked() {
+                act = 2;
+            }
+            if primary_button(ui, Id::new("guide_done"), Rect::from_min_size(Pos2::new(rect.right() - 32.0 - 108.0, by), Vec2::new(108.0, 44.0)), "Done", None).clicked() {
+                act = 1;
+            }
+        });
+        match act {
+            1 => self.guide_open = false,
+            2 => {
+                self.guide_t0 = now;
+                self.guide_frame = None;
             }
             _ => {}
         }

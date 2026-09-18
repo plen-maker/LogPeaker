@@ -5,3 +5,4 @@ plugins/*/target/
 plugins/*/Cargo.lock
 __pycache__/
 /shots
+/tools/blender/frames

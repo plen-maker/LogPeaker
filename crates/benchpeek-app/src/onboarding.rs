@@ -4,8 +4,8 @@ use eframe::egui::{self, Color32, Rect, Vec2};
 use std::time::Instant;
 
 const MOVIE: &[u8] = include_bytes!("../assets/board_intro.bpk");
-const FRAME_COUNT: usize = 480;
-const FPS: f32 = 60.0;
+pub(crate) const FRAME_COUNT: usize = 480;
+pub(crate) const FPS: f32 = 60.0;
 
 pub struct Welcome {
     pub visible: bool,
@@ -119,7 +119,7 @@ impl Welcome {
     }
 }
 // Pack layout: BPK2, frame count (u32 LE), N pairs of absolute offset and length (u32 LE), JPEG payloads.
-fn decode_frame(frame: usize) -> Result<egui::ColorImage, ()> {
+pub(crate) fn decode_frame(frame: usize) -> Result<egui::ColorImage, ()> {
     let word = |at: usize| -> Result<usize, ()> {
         let bytes: [u8; 4] = MOVIE
             .get(at..at + 4)

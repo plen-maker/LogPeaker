@@ -161,7 +161,7 @@ impl Workspace {
             self.show_toast("Custom Board isn't reachable", "Real device backend not available in demo mode", false, now);
         }
         if ghost_button(ui, Id::new("dev_add"), Rect::from_min_size(Pos2::new(r.left(), second.bottom() + 16.0), Vec2::new(160.0, 44.0)), "Add device", Some(ic::PLUS)).clicked() {
-            self.show_toast("Adding devices is unavailable", "The real backend is not wired in this demo build", false, now);
+            self.open_guide(now);
         }
     }
 

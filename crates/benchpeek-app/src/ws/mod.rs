@@ -127,6 +127,11 @@ pub struct Workspace {
     ql_t: Tween,
     pub confirm_delete: Option<String>,
     conf_t: Tween,
+    pub guide_open: bool,
+    guide_t: Tween,
+    guide_t0: f64,
+    guide_tex: Option<egui::TextureHandle>,
+    guide_frame: Option<usize>,
     pub refocus_files: bool,
 
     // Sessions
@@ -210,6 +215,11 @@ impl Workspace {
             ql_t: Tween::new(0.0),
             confirm_delete: None,
             conf_t: Tween::new(0.0),
+            guide_open: false,
+            guide_t: Tween::new(0.0),
+            guide_t0: 0.0,
+            guide_tex: None,
+            guide_frame: None,
             refocus_files: false,
             sessions: demo::make_sessions(),
             device_menu: false,
@@ -234,6 +244,13 @@ impl Workspace {
             self.page = page;
             self.page_t0 = now;
         }
+        self.device_menu = false;
+    }
+
+    pub fn open_guide(&mut self, now: f64) {
+        self.guide_open = true;
+        self.guide_t0 = now;
+        self.guide_frame = None;
         self.device_menu = false;
     }
 
@@ -314,6 +331,8 @@ impl Workspace {
             || self.ctx_t.running(now)
             || self.ql_t.running(now)
             || self.conf_t.running(now)
+            || self.guide_t.running(now)
+            || self.guide_open
             || self.dev_t.running(now)
             || self.cc_t.running(now)
             || self.toast_t.running(now)
@@ -329,7 +348,9 @@ impl Workspace {
     fn handle_keys(&mut self, ctx: &egui::Context, now: f64) {
         let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         if esc {
-            if self.confirm_delete.is_some() {
+            if self.guide_open {
+                self.guide_open = false;
+            } else if self.confirm_delete.is_some() {
                 self.confirm_delete = None;
             } else if self.quick_look.is_some() {
                 self.quick_look = None;
@@ -610,7 +631,10 @@ impl Workspace {
             22 if at(17.9) => { ctx.memory_mut(|m| m.request_focus(Id::new(("nav", "Files")))); }
             23 if at(18.4) => snap = Some("12_focus_ring"),
             24 if at(18.8) => { self.go(Page::Files, now); snap = Some("13_transition_mid"); }
-            25 if (self.shot.saved.load(std::sync::atomic::Ordering::SeqCst) >= self.shot.requested && at(17.6)) || at(60.0) => std::process::exit(0),
+            25 if at(19.4) => { self.go(Page::Devices, now); self.open_guide(now); }
+            26 if at(24.6) => snap = Some("14_connect_guide_mid"),
+            27 if at(28.0) => snap = Some("15_connect_guide_end"),
+            28 if (self.shot.saved.load(std::sync::atomic::Ordering::SeqCst) >= self.shot.requested && at(29.0)) || at(90.0) => std::process::exit(0),
             _ => adv = false,
         }
         if let Some(name) = snap {

@@ -1,4 +1,6 @@
 //! Lucide icon codepoints (font: assets/fonts/lucide.ttf, ISC licence).
+//! A catalogue: not every glyph is used yet.
+#![allow(dead_code)]
 
 pub const BOX: char = '\u{e061}';
 pub const HOUSE: char = '\u{e0f5}';

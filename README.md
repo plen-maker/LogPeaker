@@ -11,6 +11,44 @@ Status: **v1** — the decoder boundary is a real WASM component (`wasmtime`,
 component model). Plugins run sandboxed, load at runtime, and are
 indistinguishable from a compiled-in decoder to the rest of the app.
 
+## Workspace UI (monochrome)
+
+`cargo run -p benchpeek-app` opens the Workspace UI; the original signal
+cockpit is still there as `cargo run -p benchpeek-app -- --classic`.
+
+A single 1280x800 design grid (scaled to fit, centred) with a sidebar (Home,
+Devices, Live monitor, Diagnostics, Files, Sessions, Settings), a status bar,
+and overlays (device menu, Control Center, file context menu, Quick Look,
+delete confirmation, toasts, "Connect a device" guide). Pure black / graphite /
+grey / off-white palette, Inter + JetBrains Mono + Lucide icons (all under
+`crates/benchpeek-app/assets/fonts`, with their licences), one ease-out curve
+`cubic-bezier(0.22, 1, 0.36, 1)`; Settings has a **Reduce motion** switch
+(`BENCHPEEK_REDUCE_MOTION=1` sets it at start-up).
+
+**Everything the UI shows about the device is demo data** (`src/ws/demo.rs`) and
+the status bar says `DEMO DATA`. Nothing there talks to a real board yet; export
+writes a real file to `$TMPDIR/benchpeek-export/`, Wi-Fi/Bluetooth lists are
+static, and adding a device only shows the connection guide.
+
+Screenshots of every state (2560x1600 PNGs of the design rectangle, then exits):
+
+```sh
+BENCHPEEK_SHOT_DIR=shots cargo run -p benchpeek-app
+```
+
+### Connection-guide animation (Blender)
+
+`tools/blender/plugin_intro.py` builds the 8 s / 60 fps CN15 plug-in scene and
+`tools/blender/pack_bpk.py` packs the frames into the BPK2 format the app reads:
+
+```sh
+Blender -b -P tools/blender/plugin_intro.py -- --all --out tools/blender/frames --samples 12
+python3 tools/blender/pack_bpk.py tools/blender/frames crates/benchpeek-app/assets/board_intro_v2.bpk
+```
+
+The board in that scene is a stand-in; replace `build_board()` (and `PORT_POS`)
+with the real model.
+
 ## Workspace
 
 | crate | role |

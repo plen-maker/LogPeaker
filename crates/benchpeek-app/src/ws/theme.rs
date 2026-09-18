@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use eframe::egui::{
-    self, Align2, Color32, Context, FontData, FontDefinitions, FontFamily, FontId, Id, Painter,
+    Align2, Color32, Context, FontData, FontDefinitions, FontFamily, FontId, Id, Painter,
     Pos2, Rect, Ui,
 };
 
@@ -167,4 +167,41 @@ pub fn ellipsize_mono(s: &str, size: f32, max_w: f32) -> String {
     }
 }
 
-pub fn _unused(_: &egui::Ui) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ease_is_monotonic_and_pinned_at_the_ends() {
+        assert!(ease(0.0).abs() < 1e-3);
+        assert!((ease(1.0) - 1.0).abs() < 1e-3);
+        let mut prev = 0.0;
+        for i in 0..=100 {
+            let v = ease(i as f32 / 100.0);
+            assert!(v >= prev - 1e-4, "not monotonic at {i}");
+            prev = v;
+        }
+        // Ease-out: fast start.
+        assert!(ease(0.25) > 0.5);
+    }
+
+    #[test]
+    fn tween_reaches_target_and_reports_running() {
+        set_reduce_motion(false);
+        let mut t = Tween::new(0.0);
+        t.set(1.0, 10.0, 200.0);
+        assert!(t.running(10.05));
+        assert!(t.get(10.0) < 0.01);
+        assert!((t.get(10.3) - 1.0).abs() < 1e-3);
+        assert!(!t.running(10.3));
+    }
+
+    #[test]
+    fn ellipsize_keeps_short_text_and_truncates_long() {
+        assert_eq!(ellipsize_mono("abc", 12.0, 200.0), "abc");
+        let out = ellipsize_mono("abcdefghijklmnopqrstuvwxyz", 10.0, 60.0);
+        assert_eq!(out.chars().count(), 10);
+        assert!(out.ends_with('\u{2026}'));
+    }
+}

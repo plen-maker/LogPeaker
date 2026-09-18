@@ -168,6 +168,7 @@ impl Workspace {
     // ---------------------------------------------------------- Monitor ---
 
     pub(super) fn monitor_page(&mut self, ui: &mut Ui, r: Rect, now: f64) {
+        let phase = self.demo.phase(now);
         let p = ui.painter().clone();
         let gap = 16.0;
         let mw = (r.width() - gap) / 2.0;
@@ -178,16 +179,21 @@ impl Workspace {
         panel(&p, cpu, 14.0, PANEL);
         text(&p, Pos2::new(cpu.left() + 22.0, cpu.top() + 26.0), Align2::LEFT_CENTER, "CPU", font(13.0, "inter"), TEXT2);
         text(&p, Pos2::new(cpu.left() + 22.0, cpu.top() + 62.0), Align2::LEFT_CENTER, format!("{:.0}%", self.demo.cpu), font(30.0, "inter_light"), TEXT);
+        // Bars scroll continuously between samples (drawn one sample behind, so the
+        // newest bar slides in from the right instead of popping).
         let (bar_w, bar_gap) = (5.0, 3.0);
-        let fit = (((cpu.width() - 22.0 - 118.0 - 22.0) / (bar_w + bar_gap)).floor() as usize).clamp(6, 28);
-        let hist: Vec<f32> = self.demo.cpu_hist.iter().rev().take(fit).rev().copied().collect();
+        let step = bar_w + bar_gap;
+        let fit = (((cpu.width() - 22.0 - 118.0 - 22.0) / step).floor() as usize).clamp(6, 28);
+        let hist: Vec<f32> = self.demo.cpu_hist.iter().rev().take(fit + 1).rev().copied().collect();
         let n = hist.len();
         let bx1 = cpu.right() - 22.0;
+        let bars_area = Rect::from_min_max(Pos2::new(bx1 - fit as f32 * step + bar_gap, cpu.top() + 8.0), Pos2::new(bx1 + 1.0, cpu.bottom() - 8.0));
+        let bp = p.with_clip_rect(bars_area);
         for (i, v) in hist.iter().enumerate() {
-            let x = bx1 - (n - i) as f32 * (bar_w + bar_gap) + bar_gap;
+            let x = bx1 - bar_w - (n - 1 - i) as f32 * step + (1.0 - phase) * step;
             let h = (v / 100.0 * 56.0).clamp(3.0, 56.0);
             let last = i + 1 == n;
-            p.rect_filled(
+            bp.rect_filled(
                 Rect::from_min_max(Pos2::new(x, cpu.bottom() - 20.0 - h), Pos2::new(x + bar_w, cpu.bottom() - 20.0)),
                 cr(1.5),
                 if last { TEXT } else { Color32::from_white_alpha(70) },

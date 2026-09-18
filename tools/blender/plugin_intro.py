@@ -339,8 +339,16 @@ key_fac(t1_mix, [(240, 0.0), (262, 1.0), (372, 1.0), (384, 0.0)])
 key_fac(t2_mix, [(386, 0.0), (402, 1.0)])
 
 # --------------------------------------------------------------- render -----
-scene.render.engine = "CYCLES"
-scene.cycles.device = "CPU"
+if "--eevee" in argv:
+    scene.render.engine = "BLENDER_EEVEE_NEXT"
+    scene.eevee.taa_render_samples = SAMPLES
+    scene.eevee.use_shadows = True
+    for m in bpy.data.materials:
+        m.surface_render_method = "DITHERED"
+else:
+    scene.render.engine = "CYCLES"
+if scene.render.engine == "CYCLES":
+  scene.cycles.device = "CPU"
 if "--gpu" in argv:
     prefs = bpy.context.preferences.addons["cycles"].preferences
     prefs.compute_device_type = "METAL"

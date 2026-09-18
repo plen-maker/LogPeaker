@@ -92,6 +92,7 @@ pub struct Demo {
     pub mem_total_mb: f32,
     pub since_start_lines: u64,
     metric_at: f64,
+    last_metric: f64,
 }
 
 pub fn now_ms() -> u32 {
@@ -115,6 +116,7 @@ impl Demo {
             mem_total_mb: 4096.0,
             since_start_lines: 0,
             metric_at: 0.0,
+            last_metric: 0.0,
         };
         let end = now_ms();
         d.next_ms = end.saturating_sub(20 * 60 * 1000);
@@ -198,6 +200,7 @@ impl Demo {
         }
         if now >= self.metric_at {
             self.metric_at = now + 0.6;
+            self.last_metric = now;
             let target = 24.0 + 14.0 * ((now * 0.35).sin() as f32) + self.rng.unit() * 10.0;
             self.cpu += (target - self.cpu) * 0.5;
             self.cpu_hist.push_back(self.cpu);
@@ -206,6 +209,11 @@ impl Demo {
             }
             self.mem_used_mb = (self.mem_used_mb + (self.rng.unit() - 0.5) * 12.0).clamp(1300.0, 1600.0);
         }
+    }
+
+    /// 0..1 progress between two metric samples, for smooth chart scrolling.
+    pub fn phase(&self, now: f64) -> f32 {
+        ((now - self.last_metric) / 0.6).clamp(0.0, 1.0) as f32
     }
 
     pub fn index_of(&self, id: u64) -> Option<usize> {
@@ -391,5 +399,61 @@ pub fn fmt_dur(s: u32) -> String {
         format!("{} h {:02} min", s / 3600, s / 60 % 60)
     } else {
         format!("{} min {:02} s", s / 60, s % 60)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn issues_point_at_their_log_lines() {
+        let d = Demo::new();
+        assert_eq!(d.issues.len(), 2);
+        for i in &d.issues {
+            let idx = d.index_of(i.log_id).expect("issue line is in the buffer");
+            let l = &d.lines[idx];
+            assert_eq!(l.msg, i.observed);
+            assert_eq!(l.ms, i.ms);
+            assert!(l.level == Level::Error);
+        }
+    }
+
+    #[test]
+    fn dhcp_timeout_precedes_the_service_failure() {
+        let d = Demo::new();
+        let failed = d.issues.iter().find(|i| i.title == "Network service failed").unwrap();
+        let dhcp = d.issues.iter().find(|i| i.title == "DHCP timeout").unwrap();
+        assert!(dhcp.ms < failed.ms, "cause must come before effect");
+    }
+
+    #[test]
+    fn timestamps_are_monotonic_and_not_in_the_future() {
+        let d = Demo::new();
+        let mut prev = 0;
+        for l in &d.lines {
+            assert!(l.ms >= prev);
+            prev = l.ms;
+        }
+        assert!(prev <= now_ms());
+    }
+
+    #[test]
+    fn formatting_helpers() {
+        assert_eq!(fmt_ts(3_723_004), "01:02:03.004");
+        assert_eq!(fmt_size(0), "--");
+        assert_eq!(fmt_size(1536), "1.5 KB");
+        assert_eq!(fmt_age(30), "just now");
+        assert_eq!(fmt_age(7200), "2 h ago");
+        assert_eq!(fmt_dur(3725), "1 h 02 min");
+    }
+
+    #[test]
+    fn session_replay_is_deterministic() {
+        let a = Demo::session_lines(11, 100, 2);
+        let b = Demo::session_lines(11, 100, 2);
+        assert_eq!(a.len(), 100);
+        assert_eq!(a.iter().map(|l| l.ms).collect::<Vec<_>>(), b.iter().map(|l| l.ms).collect::<Vec<_>>());
+        assert_eq!(a.iter().filter(|l| l.level == Level::Error).count(), 2);
     }
 }

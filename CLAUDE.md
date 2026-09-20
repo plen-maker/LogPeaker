@@ -73,5 +73,15 @@ The README and `docs/plugin-sdk.md` cover the features themselves.
   ~9 s/frame). Plan: render on the build PC with the real model, then point
   `MOVIE` in `onboarding.rs` at `board_intro_v2.bpk`. The Blender masters live
   on the Linux side (see above).
-- Known gaps: Tab can reach widgets behind an open overlay; no real device
-  backend; the UI was only checked at 1280x800 on a Mac, not on the target board.
+- Live mode (2026-09-20): Devices -> Custom Board -> Connect, or
+  `BENCHPEEK_LIVE=user@host` (+ `BENCHPEEK_SSH_KEY`), streams a real device's
+  journal and CPU/RAM/disk into the Live monitor (`src/ws/live.rs`, reusing
+  `LogWatcher`/`StatsWatcher`). Tried against the build server. Files, Sessions
+  and diagnostics are still demo. Also fixed a `df` parsing bug in `yocto.rs`
+  (the "Use%" header was picked instead of the data line).
+- Yocto: see `meta-meerkat` branch `benchpeek-recipe` (recipe installs a
+  prebuilt aarch64 binary; the tree needs Rust >= 1.95, scarthgap has 1.75).
+  `scripts/cross-build-aarch64.sh` builds it against an existing recipe sysroot.
+- Known gaps: Tab can reach widgets behind an open overlay; Files/Sessions/rules
+  have no real backend; the UI was only checked at 1280x800 on a Mac, not on the
+  target board (the board was unreachable when the ipk was built).

@@ -432,6 +432,21 @@ impl Drop for LogWatcher {
 /// only (`BatchMode=yes`) - a spawned, non-interactive process has no tty to
 /// prompt a password into, so it fails fast instead of hanging; set up
 /// `ssh-copy-id` first if the target only has password auth today.
+static SSH_IDENTITY: Mutex<Option<String>> = Mutex::new(None);
+
+/// Sets the private key file every SSH helper (log watch, stats poll, remote
+/// commands) passes with `-i`; `None`/empty means "use ssh's own defaults".
+pub fn set_ssh_identity(path: Option<String>) {
+    *SSH_IDENTITY.lock().unwrap() = path.filter(|p| !p.trim().is_empty());
+}
+
+pub fn ssh_identity_args() -> Vec<String> {
+    match SSH_IDENTITY.lock().unwrap().clone() {
+        Some(p) => vec!["-i".into(), p, "-o".into(), "IdentitiesOnly=yes".into()],
+        None => Vec::new(),
+    }
+}
+
 pub fn spawn_log_watch(host: String, user: String, command: String) -> LogWatcher {
     let stop = Arc::new(AtomicBool::new(false));
     let child_slot: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
@@ -476,6 +491,7 @@ fn log_session(
 ) -> Result<()> {
     let target = format!("{user}@{host}");
     let mut child = Command::new("ssh")
+        .args(ssh_identity_args())
         .args([
             "-o",
             "BatchMode=yes",

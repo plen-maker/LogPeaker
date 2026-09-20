@@ -18,6 +18,7 @@ pub fn run_remote_command(host: String, user: String, command: String) {
     thread::spawn(move || {
         let target = format!("{user}@{host}");
         let _ = Command::new("ssh")
+            .args(crate::source::ssh_identity_args())
             .args([
                 "-o",
                 "BatchMode=yes",
@@ -90,6 +91,7 @@ pub fn spawn_stats_poll(host: String, user: String, interval: Duration) -> Stats
 fn poll_once(host: &str, user: &str) -> DeviceStats {
     let target = format!("{user}@{host}");
     let output = Command::new("ssh")
+        .args(crate::source::ssh_identity_args())
         .args([
             "-o",
             "BatchMode=yes",
@@ -133,7 +135,8 @@ fn poll_once(host: &str, user: &str) -> DeviceStats {
     });
 
     // `df -B1 /` output: header, then a data line with an "NN%" use column.
-    let disk_used_pct = lines.clone().find(|l| l.contains('%')).and_then(|l| {
+    // (The header's "Use%" also contains '%' but does not parse as a number.)
+    let disk_used_pct = lines.clone().find_map(|l| {
         l.split_whitespace()
             .find_map(|tok| tok.strip_suffix('%')?.parse::<f32>().ok())
     });

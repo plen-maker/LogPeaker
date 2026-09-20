@@ -90,7 +90,7 @@ impl Workspace {
         if dim > 0 {
             ctx.layer_painter(LayerId::new(Order::Middle, Id::new("dim_paint"))).rect_filled(full, 0.0, Color32::from_black_alpha(dim));
         }
-        let anything_open = self.guide_open || self.cc_open || self.device_menu || self.ctx_menu.is_some() || self.quick_look.is_some() || self.confirm_delete.is_some();
+        let anything_open = self.connect_open || self.guide_open || self.cc_open || self.device_menu || self.ctx_menu.is_some() || self.quick_look.is_some() || self.confirm_delete.is_some();
         if anything_open {
             let mut close = false;
             egui::Area::new(Id::new("backdrop")).order(Order::Middle).fixed_pos(full.min).constrain(false).show(ctx, |ui| {
@@ -98,7 +98,9 @@ impl Workspace {
                 close = r.clicked();
             });
             if close {
-                if self.guide_open {
+                if self.connect_open {
+                    self.connect_open = false;
+                } else if self.guide_open {
                     self.guide_open = false;
                 } else if self.confirm_delete.is_some() {
                     self.confirm_delete = None;
@@ -118,6 +120,7 @@ impl Workspace {
         self.quick_look_ui(ctx, full, ql_t, now);
         self.confirm_ui(ctx, full, conf_t, now);
         self.guide_ui(ctx, full, now);
+        self.connect_ui(ctx, full, now);
         self.toast_ui(ctx, full, now);
     }
 
@@ -151,7 +154,11 @@ impl Workspace {
             1 => self.device_menu = false,
             2 => {
                 self.device_menu = false;
-                self.show_toast("Custom Board isn't connected", "Connect it from the Devices page", false, now);
+                if self.live.is_some() {
+                    self.go(Page::Devices, now);
+                } else {
+                    self.open_connect(now);
+                }
             }
             3 => {
                 self.device_menu = false;
@@ -527,6 +534,99 @@ impl Workspace {
             2 => {
                 self.guide_t0 = now;
                 self.guide_frame = None;
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Workspace {
+    /// "Connect a device" over SSH: host / user / optional key file.
+    fn connect_ui(&mut self, ctx: &Context, full: Rect, now: f64) {
+        self.connect_t.set(if self.connect_open { 1.0 } else { 0.0 }, now, 200.0);
+        let t = self.connect_t.get(now);
+        if t < 0.002 {
+            return;
+        }
+        let (w, h) = (500.0, 392.0);
+        let rect = Rect::from_center_size(full.center() + Vec2::new(SIDEBAR_W_F / 2.0, 0.0), Vec2::new(w, h));
+        if self.connect_open && !self.touched.contains("conn_focused") {
+            ctx.memory_mut(|m| m.request_focus(Id::new("conn_host")));
+            self.touched.insert("conn_focused");
+        }
+        let mut host = std::mem::take(&mut self.conn_host);
+        let mut user = std::mem::take(&mut self.conn_user);
+        let mut key = std::mem::take(&mut self.conn_key);
+        let error = self.conn_error.clone();
+        let mut act = 0;
+        layer(ctx, "connect", Order::Foreground, t, rect.center(), 0.97, 0.0, |ui| {
+            panel(ui.painter(), rect, 20.0, RAISED);
+            text(ui.painter(), Pos2::new(rect.left() + 32.0, rect.top() + 38.0), Align2::LEFT_CENTER, "Connect over SSH", font(18.0, "inter_medium"), TEXT);
+            if icon_button(ui, Id::new("conn_close"), Pos2::new(rect.right() - 34.0, rect.top() + 38.0), ic::X, 19.0, TEXT2).clicked() {
+                act = 1;
+            }
+            text(ui.painter(), Pos2::new(rect.left() + 32.0, rect.top() + 72.0), Align2::LEFT_CENTER, "Live logs (journalctl) and CPU/RAM. Key-based login only.", font(12.5, "inter"), TEXT3);
+            let mut y = rect.top() + 100.0;
+            for (label, value, id, hint, pw) in [
+                ("Host", &mut host, "conn_host", "192.168.7.1", false),
+                ("User", &mut user, "conn_user", "root", false),
+                ("Key file (optional)", &mut key, "conn_key", "~/.ssh/id_ed25519", false),
+            ] {
+                let _ = pw;
+                text(ui.painter(), Pos2::new(rect.left() + 32.0, y + 6.0), Align2::LEFT_CENTER, label, font(12.0, "inter_medium"), TEXT2);
+                let field = Rect::from_min_size(Pos2::new(rect.left() + 32.0, y + 20.0), Vec2::new(w - 64.0, 44.0));
+                ui.painter().rect_filled(field, cr(10.0), Color32::from_rgb(0x12, 0x14, 0x15));
+                ui.painter().rect_stroke(field, cr(10.0), Stroke::new(1.0, border()), egui::StrokeKind::Inside);
+                let mut fui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(field.shrink2(Vec2::new(14.0, 4.0)))
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                fui.visuals_mut().override_text_color = Some(TEXT);
+                fui.add(
+                    egui::TextEdit::singleline(value)
+                        .id(Id::new(id))
+                        .hint_text(hint)
+                        .frame(egui::Frame::NONE)
+                        .vertical_align(egui::Align::Center)
+                        .font(font(14.0, "inter"))
+                        .desired_width(w - 100.0),
+                );
+                y += 74.0;
+            }
+            if let Some(e) = &error {
+                text(ui.painter(), Pos2::new(rect.left() + 32.0, y + 2.0), Align2::LEFT_CENTER, e, font(12.5, "inter"), TEXT);
+            }
+            let by = rect.bottom() - 24.0 - 44.0;
+            if ghost_button(ui, Id::new("conn_cancel"), Rect::from_min_size(Pos2::new(rect.right() - 32.0 - 116.0 - 12.0 - 116.0, by), Vec2::new(116.0, 44.0)), "Cancel", None).clicked() {
+                act = 1;
+            }
+            if primary_button(ui, Id::new("conn_go"), Rect::from_min_size(Pos2::new(rect.right() - 32.0 - 116.0, by), Vec2::new(116.0, 44.0)), "Connect", None).clicked()
+                || (ui.input(|i| i.key_pressed(egui::Key::Enter)) && ui.memory(|m| m.focused().is_some()))
+            {
+                act = 2;
+            }
+        });
+        self.conn_host = host;
+        self.conn_user = user;
+        self.conn_key = key;
+        match act {
+            1 => self.connect_open = false,
+            2 => {
+                let (h, u) = (self.conn_host.trim().to_string(), self.conn_user.trim().to_string());
+                if h.is_empty() || u.is_empty() {
+                    self.conn_error = Some("Enter a host and a user.".to_string());
+                } else {
+                    self.disconnect_live();
+                    let key = (!self.conn_key.trim().is_empty()).then(|| self.conn_key.trim().to_string());
+                    self.live = Some(super::live::Live::connect(h.clone(), u.clone(), key));
+                    self.replay = None;
+                    self.connect_open = false;
+                    self.capture_on = true;
+                    self.paused = false;
+                    self.go(Page::Monitor, now);
+                    self.show_toast("Connecting", &format!("{u}@{h}"), false, now);
+                }
             }
             _ => {}
         }

@@ -16,7 +16,7 @@ pub struct LogLine {
     pub id: u64,
     /// Milliseconds since local midnight.
     pub ms: u32,
-    pub proc_: &'static str,
+    pub proc_: String,
     pub msg: String,
     pub level: Level,
 }
@@ -178,7 +178,7 @@ impl Demo {
         let id = self.next_id;
         self.next_id += 1;
         self.since_start_lines += 1;
-        self.lines.push_back(LogLine { id, ms: self.next_ms, proc_, msg, level });
+        self.lines.push_back(LogLine { id, ms: self.next_ms, proc_: proc_.to_string(), msg, level });
         if self.lines.len() > 50_000 {
             self.lines.pop_front();
         }
@@ -243,7 +243,7 @@ impl Demo {
                 let (p, m) = INFO[rng.range(0, INFO.len() as u32) as usize];
                 (p, m.to_string(), Level::Info)
             };
-            out.push(LogLine { id: i as u64 + 1, ms, proc_: p, msg: m, level: l });
+            out.push(LogLine { id: i as u64 + 1, ms, proc_: p.to_string(), msg: m, level: l });
         }
         out
     }

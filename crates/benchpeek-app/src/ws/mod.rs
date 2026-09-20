@@ -2,8 +2,21 @@
 //! pages, overlays) laid out on a 1280x800 design grid. All device data comes
 //! from `demo` and is labelled as such.
 
+/// Issues of the current data source: none for a live SSH device (no fault
+/// rules are wired to it yet), the scripted ones for the demo.
+macro_rules! issues {
+    ($s:expr) => {
+        if $s.live.is_some() {
+            &[][..]
+        } else {
+            &$s.demo.issues[..]
+        }
+    };
+}
+
 mod bg;
 mod files;
+mod live;
 mod demo;
 mod overlays;
 mod pages;
@@ -16,6 +29,7 @@ use eframe::egui::{self, Align2, Color32, Id, Pos2, Rect, Sense, Stroke, Ui, Vec
 
 use crate::icons as ic;
 use demo::{Demo, LogLine, Node, Session};
+use live::Live;
 use theme::*;
 use widgets::*;
 
@@ -127,6 +141,13 @@ pub struct Workspace {
     ql_t: Tween,
     pub confirm_delete: Option<String>,
     conf_t: Tween,
+    pub live: Option<Live>,
+    pub connect_open: bool,
+    connect_t: Tween,
+    pub conn_host: String,
+    pub conn_user: String,
+    pub conn_key: String,
+    pub conn_error: Option<String>,
     pub guide_open: bool,
     guide_t: Tween,
     guide_t0: f64,
@@ -185,7 +206,7 @@ impl Workspace {
         let reduce = std::env::var_os("BENCHPEEK_REDUCE_MOTION").is_some();
         set_reduce_motion(reduce);
         let dir = std::env::var_os("BENCHPEEK_SHOT_DIR").map(std::path::PathBuf::from);
-        Self {
+        let mut app = Self {
             page: Page::Home,
             page_t0: -10.0,
             nav_y: Tween::new(86.0),
@@ -215,6 +236,13 @@ impl Workspace {
             ql_t: Tween::new(0.0),
             confirm_delete: None,
             conf_t: Tween::new(0.0),
+            live: None,
+            connect_open: false,
+            connect_t: Tween::new(0.0),
+            conn_host: String::new(),
+            conn_user: "root".to_string(),
+            conn_key: String::new(),
+            conn_error: None,
             guide_open: false,
             guide_t: Tween::new(0.0),
             guide_t0: 0.0,
@@ -236,7 +264,14 @@ impl Workspace {
             reduce_motion: reduce,
             touched: HashSet::new(),
             shot: Shot { dir, design: Rect::NOTHING, ..Default::default() },
+        };
+        // BENCHPEEK_LIVE=user@host [BENCHPEEK_SSH_KEY=path]: start connected (kiosk / testing).
+        if let Ok(target) = std::env::var("BENCHPEEK_LIVE") {
+            if let Some((user, host)) = target.split_once('@') {
+                app.live = Some(Live::connect(host.to_string(), user.to_string(), std::env::var("BENCHPEEK_SSH_KEY").ok()));
+            }
         }
+        app
     }
 
     pub fn go(&mut self, page: Page, now: f64) {
@@ -252,6 +287,23 @@ impl Workspace {
         self.guide_t0 = now;
         self.guide_frame = None;
         self.device_menu = false;
+    }
+
+    pub fn open_connect(&mut self, now: f64) {
+        self.connect_open = true;
+        self.conn_error = None;
+        self.device_menu = false;
+        self.touched.remove("conn_focused");
+        let _ = now;
+    }
+
+    pub fn disconnect_live(&mut self) {
+        if let Some(mut l) = self.live.take() {
+            // Joining the SSH threads can take a moment; keep the UI responsive.
+            std::thread::spawn(move || l.stop());
+        }
+        self.selected_log = None;
+        self.pin_scroll = false;
     }
 
     pub fn show_toast(&mut self, title: &str, sub: &str, view_session: bool, now: f64) {
@@ -276,6 +328,9 @@ impl Workspace {
         self.apply_scale(&ctx);
         let now = ctx.input(|i| i.time);
         self.demo.tick(now, self.capture_on && !self.paused && self.replay.is_none());
+        if let Some(l) = &mut self.live {
+            l.pump(now, self.capture_on && !self.paused);
+        }
         self.handle_keys(&ctx, now);
 
         // The whole UI lives on a fixed 1280x800 design rectangle, centred in
@@ -332,6 +387,8 @@ impl Workspace {
             || self.ql_t.running(now)
             || self.conf_t.running(now)
             || self.guide_t.running(now)
+            || self.connect_t.running(now)
+            || self.live.is_some()
             || self.guide_open
             || self.dev_t.running(now)
             || self.cc_t.running(now)
@@ -348,7 +405,9 @@ impl Workspace {
     fn handle_keys(&mut self, ctx: &egui::Context, now: f64) {
         let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         if esc {
-            if self.guide_open {
+            if self.connect_open {
+                self.connect_open = false;
+            } else if self.guide_open {
                 self.guide_open = false;
             } else if self.confirm_delete.is_some() {
                 self.confirm_delete = None;
@@ -459,7 +518,11 @@ impl Workspace {
         let cy = bar.center().y;
         let x = bar.left() + MARGIN;
         icon(&p, ic::MICROCHIP, Pos2::new(x + 9.0, cy), 18.0, TEXT2);
-        let r = text(&p, Pos2::new(x + 26.0, cy), Align2::LEFT_CENTER, "STM32MP257F-DK", font(14.0, "inter_medium"), TEXT);
+        let device_name = match (&self.live, self.page) {
+            (Some(l), Page::Monitor) => l.target(),
+            _ => "STM32MP257F-DK".to_string(),
+        };
+        let r = text(&p, Pos2::new(x + 26.0, cy), Align2::LEFT_CENTER, device_name, font(14.0, "inter_medium"), TEXT);
         p.line_segment([Pos2::new(r.right() + 14.0, cy - 9.0), Pos2::new(r.right() + 14.0, cy + 9.0)], Stroke::new(1.0, border()));
         text(&p, Pos2::new(r.right() + 28.0, cy), Align2::LEFT_CENTER, self.page.label(), font(14.0, "inter"), TEXT2);
 
@@ -487,7 +550,7 @@ impl Workspace {
         rx = cluster.left() - 12.0;
 
         // Issue chip (opens the diagnostics panel).
-        let n = self.demo.issues.len();
+        let n = issues!(self).len();
         if n > 0 {
             let label = format!("{n} issues");
             let g = p.layout_no_wrap(label.clone(), font(13.0, "inter_medium"), TEXT);
@@ -511,11 +574,16 @@ impl Workspace {
         }
 
         // DEMO badge - always visible: all device data here is simulated.
-        let g = p.layout_no_wrap("DEMO DATA".to_string(), font(11.0, "inter_semibold"), TEXT2);
+        // Only the Live monitor shows real data; every other page is still demo.
+        let badge = match (&self.live, self.page) {
+            (Some(l), Page::Monitor) => format!("LIVE  {}", l.target()),
+            _ => "DEMO DATA".to_string(),
+        };
+        let g = p.layout_no_wrap(badge.clone(), font(11.0, "inter_semibold"), TEXT2);
         let w = g.size().x + 20.0;
         let chip = Rect::from_min_max(Pos2::new(rx - w, cy - 11.0), Pos2::new(rx, cy + 11.0));
         p.rect_stroke(chip, cr(11.0), Stroke::new(1.0, Color32::from_white_alpha(60)), egui::StrokeKind::Inside);
-        text(&p, chip.center(), Align2::CENTER_CENTER, "DEMO DATA", font(11.0, "inter_semibold"), TEXT2);
+        text(&p, chip.center(), Align2::CENTER_CENTER, badge, font(11.0, "inter_semibold"), if self.live.is_some() && self.page == Page::Monitor { TEXT } else { TEXT2 });
     }
 
     fn page_ui(&mut self, ui: &mut Ui, rect: Rect, now: f64) {
@@ -555,7 +623,7 @@ impl Workspace {
         let path = format!("~/sessions/{}.bpk", chrono::Local::now().format("%Y-%m-%d_%H%M"));
         self.sessions.insert(
             0,
-            Session { name, when: "Today, just now".into(), duration_s: dur, errors: self.demo.issues.len(), lines: self.demo.lines.len().min(2000), seed: 99 },
+            Session { name, when: "Today, just now".into(), duration_s: dur, errors: issues!(self).len(), lines: self.demo.lines.len().min(2000), seed: 99 },
         );
         self.show_toast("Capture saved", &path, true, now);
     }
@@ -634,7 +702,9 @@ impl Workspace {
             25 if at(19.4) => { self.go(Page::Devices, now); self.open_guide(now); }
             26 if at(24.6) => snap = Some("14_connect_guide_mid"),
             27 if at(28.0) => snap = Some("15_connect_guide_end"),
-            28 if (self.shot.saved.load(std::sync::atomic::Ordering::SeqCst) >= self.shot.requested && at(29.0)) || at(90.0) => std::process::exit(0),
+            28 if at(29.0) => { self.go(Page::Devices, now); self.guide_open = false; self.open_connect(now); self.conn_host = "192.168.7.1".into(); }
+            29 if at(30.2) => snap = Some("16_connect_dialog"),
+            30 if (self.shot.saved.load(std::sync::atomic::Ordering::SeqCst) >= self.shot.requested && at(31.0)) || at(90.0) => std::process::exit(0),
             _ => adv = false,
         }
         if let Some(name) = snap {

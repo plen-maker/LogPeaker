@@ -154,11 +154,28 @@ impl Workspace {
 
         let second = Rect::from_min_size(Pos2::new(r.left(), main.bottom() + 16.0), Vec2::new(r.width(), 92.0));
         panel(&p, second, 16.0, PANEL);
-        icon(&p, ic::SERVER, Pos2::new(second.left() + 42.0, second.center().y), 26.0, TEXT3);
-        text(&p, Pos2::new(second.left() + 76.0, second.center().y - 11.0), Align2::LEFT_CENTER, "Custom Board", font(16.0, "inter_medium"), TEXT);
-        text(&p, Pos2::new(second.left() + 76.0, second.center().y + 12.0), Align2::LEFT_CENTER, "Not connected", font(13.0, "inter"), TEXT2);
-        if ghost_button(ui, Id::new("dev_connect"), Rect::from_center_size(Pos2::new(second.right() - 24.0 - 60.0, second.center().y), Vec2::new(120.0, 44.0)), "Connect", None).clicked() {
-            self.show_toast("Custom Board isn't reachable", "Real device backend not available in demo mode", false, now);
+        let (title, sub_txt, live_now) = match &self.live {
+            Some(l) => (
+                l.target(),
+                match l.state() {
+                    super::live::LinkState::Connecting => "Connecting over SSH...".to_string(),
+                    super::live::LinkState::Connected => "Connected over SSH - live logs and CPU/RAM".to_string(),
+                    super::live::LinkState::Unreachable => "Unreachable - retrying".to_string(),
+                },
+                true,
+            ),
+            None => ("Custom Board".to_string(), "Not connected - connect over SSH for live logs".to_string(), false),
+        };
+        icon(&p, if live_now { ic::SERVER } else { ic::SERVER }, Pos2::new(second.left() + 42.0, second.center().y), 26.0, if live_now { TEXT } else { TEXT3 });
+        text(&p, Pos2::new(second.left() + 76.0, second.center().y - 11.0), Align2::LEFT_CENTER, title, font(16.0, "inter_medium"), TEXT);
+        text(&p, Pos2::new(second.left() + 76.0, second.center().y + 12.0), Align2::LEFT_CENTER, sub_txt, font(13.0, "inter"), TEXT2);
+        let cbtn = Rect::from_center_size(Pos2::new(second.right() - 24.0 - 70.0, second.center().y), Vec2::new(140.0, 44.0));
+        if live_now {
+            if ghost_button(ui, Id::new("dev_disconnect"), cbtn, "Disconnect", None).clicked() {
+                self.disconnect_live();
+            }
+        } else if ghost_button(ui, Id::new("dev_connect"), cbtn, "Connect", None).clicked() {
+            self.open_connect(now);
         }
         if ghost_button(ui, Id::new("dev_add"), Rect::from_min_size(Pos2::new(r.left(), second.bottom() + 16.0), Vec2::new(160.0, 44.0)), "Add device", Some(ic::PLUS)).clicked() {
             self.open_guide(now);
@@ -168,7 +185,14 @@ impl Workspace {
     // ---------------------------------------------------------- Monitor ---
 
     pub(super) fn monitor_page(&mut self, ui: &mut Ui, r: Rect, now: f64) {
-        let phase = self.demo.phase(now);
+        let phase = match &self.live {
+            Some(l) => l.phase(now),
+            None => self.demo.phase(now),
+        };
+        let cpu_pct: Option<f32> = match &self.live {
+            Some(l) => l.stats_now.cpu_load_pct,
+            None => Some(self.demo.cpu),
+        };
         let p = ui.painter().clone();
         let gap = 16.0;
         let mw = (r.width() - gap) / 2.0;
@@ -178,13 +202,17 @@ impl Workspace {
         let cpu = Rect::from_min_size(r.min, Vec2::new(mw, mh));
         panel(&p, cpu, 14.0, PANEL);
         text(&p, Pos2::new(cpu.left() + 22.0, cpu.top() + 26.0), Align2::LEFT_CENTER, "CPU", font(13.0, "inter"), TEXT2);
-        text(&p, Pos2::new(cpu.left() + 22.0, cpu.top() + 62.0), Align2::LEFT_CENTER, format!("{:.0}%", self.demo.cpu), font(30.0, "inter_light"), TEXT);
+        text(&p, Pos2::new(cpu.left() + 22.0, cpu.top() + 62.0), Align2::LEFT_CENTER, cpu_pct.map_or("--".to_string(), |v| format!("{v:.0}%")), font(30.0, "inter_light"), TEXT);
         // Bars scroll continuously between samples (drawn one sample behind, so the
         // newest bar slides in from the right instead of popping).
         let (bar_w, bar_gap) = (5.0, 3.0);
         let step = bar_w + bar_gap;
         let fit = (((cpu.width() - 22.0 - 118.0 - 22.0) / step).floor() as usize).clamp(6, 28);
-        let hist: Vec<f32> = self.demo.cpu_hist.iter().rev().take(fit + 1).rev().copied().collect();
+        let hist_src = match &self.live {
+            Some(l) => &l.cpu_hist,
+            None => &self.demo.cpu_hist,
+        };
+        let hist: Vec<f32> = hist_src.iter().rev().take(fit + 1).rev().copied().collect();
         let n = hist.len();
         let bx1 = cpu.right() - 22.0;
         let bars_area = Rect::from_min_max(Pos2::new(bx1 - fit as f32 * step + bar_gap, cpu.top() + 8.0), Pos2::new(bx1 + 1.0, cpu.bottom() - 8.0));
@@ -203,17 +231,28 @@ impl Workspace {
         // Memory.
         let mem = Rect::from_min_size(Pos2::new(cpu.right() + gap, r.top()), Vec2::new(mw, mh));
         panel(&p, mem, 14.0, PANEL);
-        let frac = self.demo.mem_used_mb / self.demo.mem_total_mb;
+        // Live: percentages from `free`/`df` (no absolute sizes); demo: GB.
+        let (frac, mem_big, mem_side): (f32, String, String) = match &self.live {
+            Some(l) => {
+                let f = l.stats_now.mem_used_pct.map(|v| v / 100.0);
+                (
+                    f.unwrap_or(0.0),
+                    f.map_or("--".to_string(), |v| format!("{:.0}%", v * 100.0)),
+                    l.stats_now.disk_used_pct.map_or("disk --".to_string(), |v| format!("disk {v:.0}%")),
+                )
+            }
+            None => {
+                let f = self.demo.mem_used_mb / self.demo.mem_total_mb;
+                (
+                    f,
+                    format!("{:.1} / {:.1} GB", self.demo.mem_used_mb / 1024.0, self.demo.mem_total_mb / 1024.0),
+                    format!("{:.0}% used", f * 100.0),
+                )
+            }
+        };
         text(&p, Pos2::new(mem.left() + 22.0, mem.top() + 26.0), Align2::LEFT_CENTER, "Memory", font(13.0, "inter"), TEXT2);
-        text(&p, Pos2::new(mem.right() - 22.0, mem.top() + 26.0), Align2::RIGHT_CENTER, format!("{:.0}% used", frac * 100.0), font(13.0, "inter"), TEXT2);
-        text(
-            &p,
-            Pos2::new(mem.left() + 22.0, mem.top() + 56.0),
-            Align2::LEFT_CENTER,
-            format!("{:.1} / {:.1} GB", self.demo.mem_used_mb / 1024.0, self.demo.mem_total_mb / 1024.0),
-            font(26.0, "inter_light"),
-            TEXT,
-        );
+        text(&p, Pos2::new(mem.right() - 22.0, mem.top() + 26.0), Align2::RIGHT_CENTER, mem_side, font(13.0, "inter"), TEXT2);
+        text(&p, Pos2::new(mem.left() + 22.0, mem.top() + 56.0), Align2::LEFT_CENTER, mem_big, font(26.0, "inter_light"), TEXT);
         segments(&p, Rect::from_min_size(Pos2::new(mem.left() + 22.0, mem.bottom() - 20.0), Vec2::new(mem.width() - 44.0, 6.0)), 24, frac);
 
         // Log window.
@@ -233,9 +272,10 @@ impl Workspace {
             inner.min.y += 52.0;
         }
         let row_h = 28.0;
-        let (sa, sb): (&[demo::LogLine], &[demo::LogLine]) = match &self.replay {
-            Some(rep) => (&rep.lines[..], &[]),
-            None => self.demo.lines.as_slices(),
+        let (sa, sb): (&[demo::LogLine], &[demo::LogLine]) = match (&self.replay, &self.live) {
+            (Some(rep), _) => (&rep.lines[..], &[]),
+            (None, Some(l)) => l.lines.as_slices(),
+            (None, None) => self.demo.lines.as_slices(),
         };
         let total = sa.len() + sb.len();
         let selected = self.selected_log;
@@ -245,6 +285,7 @@ impl Workspace {
         if let Some(id) = self.scroll_to_log.take() {
             let idx = match &self.replay {
                 Some(_) => sa.iter().position(|l| l.id == id),
+                None if self.live.is_some() => None,
                 None => self.demo.index_of(id),
             };
             if let Some(i) = idx {
@@ -283,7 +324,7 @@ impl Workspace {
                 let mono = font(12.5, "mono");
                 text(pt, Pos2::new(rect.left() + 38.0, cy), Align2::LEFT_CENTER, demo::fmt_ts(l.ms), mono.clone(), if sel || err { TEXT2 } else { TEXT3 });
                 let clip = pt.with_clip_rect(rect);
-                text(&clip, Pos2::new(rect.left() + 168.0, cy), Align2::LEFT_CENTER, ellipsize_mono(l.proc_, 12.5, 188.0), mono.clone(), if err || sel { TEXT } else { TEXT2 });
+                text(&clip, Pos2::new(rect.left() + 168.0, cy), Align2::LEFT_CENTER, ellipsize_mono(&l.proc_, 12.5, 188.0), mono.clone(), if err || sel { TEXT } else { TEXT2 });
                 let mx = rect.left() + 168.0 + 196.0;
                 let msg = ellipsize_mono(&l.msg, 12.5, rect.right() - mx - 14.0);
                 text(&clip, Pos2::new(mx, cy), Align2::LEFT_CENTER, msg, mono, if err || sel { TEXT } else { TEXT2 });
@@ -308,7 +349,10 @@ impl Workspace {
         }
         let clear = Rect::from_min_size(Pos2::new(r.right() - 96.0, by), Vec2::new(96.0, 44.0));
         if ghost_button(ui, Id::new("clear_log"), clear, "Clear", Some(ic::X)).clicked() && self.replay.is_none() {
-            self.demo.clear();
+            match &mut self.live {
+                Some(l) => l.lines.clear(),
+                None => self.demo.clear(),
+            }
             self.selected_log = None;
             self.pin_scroll = false;
         }
@@ -332,10 +376,10 @@ impl Workspace {
             self.diag_open = false;
         }
         let cx = x0 + DIAG_W / 2.0;
-        let n = self.demo.issues.len();
-        icon(&p, ic::CIRCLE_ALERT, Pos2::new(cx, rect.top() + 106.0), 52.0, TEXT);
-        text(&p, Pos2::new(cx, rect.top() + 162.0), Align2::CENTER_CENTER, format!("{n} issues detected"), font(20.0, "inter_medium"), TEXT);
-        text(&p, Pos2::new(cx, rect.top() + 188.0), Align2::CENTER_CENTER, "System requires attention", font(13.5, "inter"), TEXT2);
+        let n = issues!(self).len();
+        icon(&p, if n == 0 { ic::CIRCLE_CHECK } else { ic::CIRCLE_ALERT }, Pos2::new(cx, rect.top() + 106.0), 52.0, TEXT);
+        text(&p, Pos2::new(cx, rect.top() + 162.0), Align2::CENTER_CENTER, if n == 0 { "No issues detected".to_string() } else { format!("{n} issues detected") }, font(20.0, "inter_medium"), TEXT);
+        text(&p, Pos2::new(cx, rect.top() + 188.0), Align2::CENTER_CENTER, if n == 0 { "No fault rules are wired to this device yet" } else { "System requires attention" }, font(13.5, "inter"), TEXT2);
 
         let mut y = rect.top() + 218.0;
         for i in 0..n {
@@ -348,7 +392,7 @@ impl Workspace {
             } else if h > 0.0 {
                 p.rect_filled(row, cr(12.0), Color32::from_white_alpha((h * 12.0) as u8));
             }
-            let is = &self.demo.issues[i];
+            let is = &issues!(self)[i];
             icon(&p, ic::TRIANGLE_ALERT, Pos2::new(row.left() + 24.0, row.center().y), 17.0, if sel { TEXT } else { TEXT2 });
             text(&p, Pos2::new(row.left() + 48.0, row.center().y - 10.0), Align2::LEFT_CENTER, is.title, font(14.0, "inter_medium"), TEXT);
             text(&p, Pos2::new(row.left() + 48.0, row.center().y + 11.0), Align2::LEFT_CENTER, if i == 0 { is.service } else { is.summary }, font(12.5, "inter"), TEXT2);
@@ -363,7 +407,7 @@ impl Workspace {
         if n == 0 {
             return;
         }
-        let is = &self.demo.issues[self.sel_issue.min(n - 1)];
+        let is = &issues!(self)[self.sel_issue.min(n - 1)];
         y += 10.0;
         p.line_segment([Pos2::new(x0 + 24.0, y), Pos2::new(x0 + DIAG_W - 24.0, y)], Stroke::new(1.0, hairline()));
         y += 16.0;
@@ -401,12 +445,12 @@ impl Workspace {
     pub(super) fn diagnostics_page(&mut self, ui: &mut Ui, r: Rect, now: f64) {
         let p = ui.painter().clone();
         let y0 = heading(&p, r, "Diagnostics", "Health checks and detected issues");
-        let n = self.demo.issues.len();
+        let n = issues!(self).len();
         let sum = Rect::from_min_size(Pos2::new(r.left(), y0), Vec2::new(r.width(), 96.0));
         panel(&p, sum, 16.0, PANEL);
-        icon(&p, ic::CIRCLE_ALERT, Pos2::new(sum.left() + 48.0, sum.center().y), 34.0, TEXT);
-        text(&p, Pos2::new(sum.left() + 90.0, sum.center().y - 11.0), Align2::LEFT_CENTER, format!("{n} issues detected"), font(20.0, "inter_medium"), TEXT);
-        text(&p, Pos2::new(sum.left() + 90.0, sum.center().y + 14.0), Align2::LEFT_CENTER, "System requires attention", font(13.5, "inter"), TEXT2);
+        icon(&p, if n == 0 { ic::CIRCLE_CHECK } else { ic::CIRCLE_ALERT }, Pos2::new(sum.left() + 48.0, sum.center().y), 34.0, TEXT);
+        text(&p, Pos2::new(sum.left() + 90.0, sum.center().y - 11.0), Align2::LEFT_CENTER, if n == 0 { "No issues detected".to_string() } else { format!("{n} issues detected") }, font(20.0, "inter_medium"), TEXT);
+        text(&p, Pos2::new(sum.left() + 90.0, sum.center().y + 14.0), Align2::LEFT_CENTER, if n == 0 { "No fault rules are wired to this device yet" } else { "System requires attention" }, font(13.5, "inter"), TEXT2);
         let busy = self.recheck_at.is_some();
         if let Some(t0) = self.recheck_at {
             let f = ((now - t0) / 1.8).clamp(0.0, 1.0) as f32;
@@ -422,7 +466,7 @@ impl Workspace {
         let mut y = sum.bottom() + 16.0;
         let mut inspect = None;
         for i in 0..n {
-            let is = &self.demo.issues[i];
+            let is = &issues!(self)[i];
             let card = Rect::from_min_size(Pos2::new(r.left(), y), Vec2::new(r.width(), 172.0));
             panel(&p, card, 16.0, PANEL);
             icon(&p, ic::TRIANGLE_ALERT, Pos2::new(card.left() + 34.0, card.top() + 36.0), 20.0, TEXT);
@@ -441,7 +485,7 @@ impl Workspace {
         if let Some(i) = inspect {
             self.sel_issue = i;
             self.replay = None;
-            self.selected_log = Some(self.demo.issues[i].log_id);
+            self.selected_log = Some(issues!(self)[i].log_id);
             self.scroll_to_log = self.selected_log;
             self.diag_open = true;
             self.go(Page::Monitor, now);
@@ -540,8 +584,8 @@ impl Workspace {
         panel(&p, sy, 16.0, PANEL);
         text(&p, Pos2::new(sy.left() + 24.0, sy.top() + 28.0), Align2::LEFT_CENTER, "System", font(15.0, "inter_medium"), TEXT);
         let info = [
-            ("Data source", "Demo (simulated device)".to_string()),
-            ("Backend", "Not connected".to_string()),
+            ("Data source", match &self.live { Some(l) => format!("Live logs + stats: {}", l.target()), None => "Demo (simulated device)".to_string() }),
+            ("Backend", match &self.live { Some(_) => "SSH (Files, Sessions: demo)".to_string(), None => "Not connected".to_string() }),
             ("App version", env!("CARGO_PKG_VERSION").to_string()),
         ];
         for (i, (k, v)) in info.iter().enumerate() {

@@ -36,6 +36,17 @@ Screenshots of every state (2560x1600 PNGs of the design rectangle, then exits):
 BENCHPEEK_SHOT_DIR=shots cargo run -p benchpeek-app
 ```
 
+### Live mode (SSH)
+
+Devices -> "Custom Board" -> Connect (or `BENCHPEEK_LIVE=user@host
+[BENCHPEEK_SSH_KEY=~/.ssh/key] cargo run -p benchpeek-app`) links the **Live
+monitor** to a real Linux device over key-based SSH: `journalctl -f` for the log
+window and one `nproc / loadavg / free / df` round trip every 2 s for CPU (load
+average / cores), RAM and disk. The status bar shows `LIVE user@host` on that
+page. Everything else (Files, Sessions, diagnostic rules) is still demo data and
+keeps the `DEMO DATA` badge; a live device has no issues listed because no fault
+rules are wired to it yet.
+
 ### Connection-guide animation (Blender)
 
 `tools/blender/plugin_intro.py` builds the 8 s / 60 fps CN15 plug-in scene and

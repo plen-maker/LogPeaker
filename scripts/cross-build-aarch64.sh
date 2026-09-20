@@ -35,7 +35,7 @@ for lib in libudev; do
     }
 done
 for lib in wayland-client xkbcommon egl glesv2; do
-    pkg-config --exists "$lib" || echo "note: $lib.pc not in the SDK (fine: it is dlopen()ed at runtime)" >&2
+    pkg-config --exists "$lib" || echo "note: $lib.pc is not in the SDK - fine, it is loaded at runtime" >&2
 done
 
 # GLES back-end (no Vulkan needed on the board's gcnano GPU), no wgpu.

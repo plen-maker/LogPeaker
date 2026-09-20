@@ -4,6 +4,13 @@ version = "0.0.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Renderer back-end. Desktop default is wgpu; embedded Wayland targets with an
+# OpenGL ES driver (e.g. STM32MP25 gcnano) build with `--no-default-features --features glow`.
+default = ["wgpu"]
+wgpu = ["eframe/wgpu"]
+glow = ["eframe/glow"]
+
 [[bin]]
 name = "benchpeek"
 path = "src/main.rs"
@@ -17,8 +24,10 @@ can-raw = { path = "../../plugins/can-raw" }
 anyhow = "1"
 fastrand = "2"
 serialport = "4"
-eframe = "0.36.1"
+eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "links", "wayland", "x11"] }
 egui = "0.36.1"
+# Direct dependency only to keep winit's default features (notably wayland-dlopen) enabled.
+winit = "0.30"
 egui_plot = "0.37.0"
 nusb = "0.2.7"
 

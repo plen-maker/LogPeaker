@@ -6,3 +6,5 @@ plugins/*/Cargo.lock
 __pycache__/
 /shots
 /tools/blender/frames
+/target-glow
+/shots-glow

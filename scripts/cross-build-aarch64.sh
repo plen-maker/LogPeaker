@@ -49,6 +49,8 @@ export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="$LINKER"
 export CC_aarch64_unknown_linux_gnu="$CC"
 export PKG_CONFIG_ALLOW_CROSS=1
 export CARGO_PROFILE_RELEASE_STRIP=symbols
+# Yocto's package QA (ldflags) wants a GNU hash table.
+export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,--hash-style=gnu"
 
 for lib in libudev; do
     pkg-config --exists "$lib" || {

@@ -9,7 +9,7 @@
 # Needs rustup with Rust >= 1.95 (the dependency tree requires it).
 set -euo pipefail
 
-: "${SDK_ENV:?set SDK_ENV to the SDK's environment-setup-* script}"
+: "${SDK_ENV:?set SDK_ENV to the environment-setup script of the SDK}"
 TARGET=aarch64-unknown-linux-gnu
 
 # shellcheck disable=SC1090
@@ -17,7 +17,7 @@ source "$SDK_ENV"    # exports CC, SDKTARGETSYSROOT, PKG_CONFIG_* ...
 
 rustup target add "$TARGET"
 
-# The SDK's $CC carries flags (--sysroot, -mcpu ...): wrap it as the linker.
+# The SDK $CC carries flags (--sysroot, -mcpu ...): wrap it as the linker.
 LINKER="$(mktemp)"
 trap 'rm -f "$LINKER"' EXIT
 printf '#!/bin/sh\nexec %s "$@"\n' "$CC" > "$LINKER"

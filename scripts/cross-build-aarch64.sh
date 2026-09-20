@@ -1,23 +1,45 @@
 #!/usr/bin/env bash
-# Cross-build benchpeek for the STM32MP257F-DK (aarch64 Linux) against a Yocto
-# SDK sysroot. Run on the Linux build machine, not on macOS.
+# Cross-build benchpeek for the STM32MP257F-DK (aarch64 Linux). Run on the Linux
+# build machine (inside the Yocto builder container), not on macOS.
 #
-#   SDK_ENV=/path/to/environment-setup-<target>-linux \
-#   [DEST=/path/to/meta-meerkat/recipes-graphics/benchpeek/files/benchpeek] \
-#   scripts/cross-build-aarch64.sh
+# Two ways to get a target sysroot + cross compiler:
 #
-# Needs rustup with Rust >= 1.95 (the dependency tree requires it).
+#  A) Reuse an already built recipe's sysroot (no SDK needed). Any recipe that
+#     depends on udev, libxkbcommon, wayland and virtual/egl + libgles2 works, e.g.
+#     meerkat-compositor:
+#       RECIPE_WORKDIR=$BUILDDIR/tmp-glibc/work/cortexa35-ostl-linux/meerkat-compositor/0.1 \
+#       DEST=<layer>/recipes-graphics/benchpeek/files/benchpeek \
+#       scripts/cross-build-aarch64.sh
+#
+#  B) A Yocto SDK:
+#       SDK_ENV=/path/to/environment-setup-<target>-linux scripts/cross-build-aarch64.sh
+#
+# Needs rustup with Rust >= 1.95 (the dependency tree requires it; scarthgap
+# ships 1.75, so the Yocto Rust cannot build this).
 set -euo pipefail
 
-: "${SDK_ENV:?set SDK_ENV to the environment-setup script of the SDK}"
 TARGET=aarch64-unknown-linux-gnu
 
-# shellcheck disable=SC1090
-source "$SDK_ENV"    # exports CC, SDKTARGETSYSROOT, PKG_CONFIG_* ...
+if [ -n "${RECIPE_WORKDIR:-}" ]; then
+    SYSROOT="$RECIPE_WORKDIR/recipe-sysroot"
+    NATIVE="$RECIPE_WORKDIR/recipe-sysroot-native"
+    GCC="$(ls "$NATIVE"/usr/bin/aarch64-*/aarch64-*-gcc | head -n 1)"
+    [ -x "$GCC" ] || { echo "error: no aarch64 cross gcc under $NATIVE" >&2; exit 1; }
+    CC="$GCC --sysroot=$SYSROOT"
+    export PATH="$NATIVE/usr/bin:$PATH"          # brings the native pkg-config
+    export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
+    export PKG_CONFIG_LIBDIR="$SYSROOT/usr/lib/pkgconfig:$SYSROOT/usr/share/pkgconfig"
+elif [ -n "${SDK_ENV:-}" ]; then
+    # shellcheck disable=SC1090
+    source "$SDK_ENV"    # exports CC, SDKTARGETSYSROOT, PKG_CONFIG_* ...
+else
+    echo "error: set RECIPE_WORKDIR (a built recipe's WORKDIR) or SDK_ENV" >&2
+    exit 1
+fi
 
 rustup target add "$TARGET"
 
-# The SDK $CC carries flags (--sysroot, -mcpu ...): wrap it as the linker.
+# $CC carries flags (--sysroot ...): wrap it as the linker.
 LINKER="$(mktemp)"
 trap 'rm -f "$LINKER"' EXIT
 printf '#!/bin/sh\nexec %s "$@"\n' "$CC" > "$LINKER"
@@ -30,12 +52,12 @@ export CARGO_PROFILE_RELEASE_STRIP=symbols
 
 for lib in libudev; do
     pkg-config --exists "$lib" || {
-        echo "error: $lib not found in the SDK sysroot; add its -dev package to TOOLCHAIN_TARGET_TASK and rebuild the SDK" >&2
+        echo "error: $lib not found in the target sysroot" >&2
         exit 1
     }
 done
 for lib in wayland-client xkbcommon egl glesv2; do
-    pkg-config --exists "$lib" || echo "note: $lib.pc is not in the SDK - fine, it is loaded at runtime" >&2
+    pkg-config --exists "$lib" || echo "note: $lib.pc is not in the sysroot - fine, it is loaded at runtime" >&2
 done
 
 # GLES back-end (no Vulkan needed on the board's gcnano GPU), no wgpu.

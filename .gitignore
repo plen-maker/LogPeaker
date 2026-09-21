@@ -9,3 +9,5 @@ __pycache__/
 /target-glow
 /shots-glow
 /shots-live
+/tools/blender/*.bpk
+/shots-anim

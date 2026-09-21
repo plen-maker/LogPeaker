@@ -1,5 +1,6 @@
-//! MB1605C animation: full board transitions to transparent context around CN15 USB OTG.
-//! Connector identities: ST UM3385 rev 2, figure 4 (CN21 ST-LINK, CN15 USB3).
+//! MB1605C animation: full board transitions to transparent context around CN19, the dual USB-A
+//! host port, where the device to inspect is plugged in. benchpeek reads that device through the
+//! board's USB host; CN15 (USB OTG) and CN21 (ST-LINK / power) are not used for that.
 use eframe::egui::{self, Color32, Rect, Vec2};
 use std::time::Instant;
 
@@ -85,7 +86,7 @@ impl Welcome {
             );
         }
         if self.image_error {
-            ui.label("The connection animation could not be loaded. Connect USB-C to CN15.");
+            ui.label("The connection animation could not be loaded. Plug your device into the USB-A port (CN19).");
         }
         if !self.reduced_motion && frame < FRAME_COUNT - 1 {
             ui.ctx()
@@ -93,8 +94,8 @@ impl Welcome {
         }
         ui.add_space(12.0);
         ui.vertical_centered(|ui| {
-            ui.label("Connect your computer to CN15 — USB-C OTG / device.");
-            ui.weak("STM32MP257F-DK · CN15 connection guide");
+            ui.label("Plug your device into the USB-A host port (CN19).");
+            ui.weak("STM32MP257F-DK · USB host connection guide");
             if ports.is_empty() {
                 ui.label("Waiting for a USB serial device…");
             } else {

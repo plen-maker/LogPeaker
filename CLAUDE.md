@@ -51,16 +51,17 @@ The README and `docs/plugin-sdk.md` cover the features themselves.
 ## Environment notes
 - The Linux side had no display, so no UI change was ever seen running, only
   built and unit-tested. On macOS, run the app and look at it.
-- Blender scenes for making more intro animations are in `tools/blender/`: the
-  base board model (`Benchpeek_STM32MP257F-DK.blend`), the latest scene
-  (`..._USB_OTG_board_fade_60fps.blend`) and an isolated-port variant
-  (`..._USB_OTG_isolated_60fps.blend`). Contents were never opened from the
-  Linux sandbox (no Blender there); the names and save times are all that's
-  known. The scripts that drive them (`plugin_intro.py`, `pack_bpk.py`) are on
-  `origin/mono-workspace-ui`. Two intermediate iterations and the 89 ST STEP
-  source models (58 MB) stayed on the Linux side under
-  `~/Documents/Codex/2026-09-10/csa/`. The app itself builds from the baked
-  `crates/benchpeek-app/assets/board_intro.bpk` alone.
+- Blender scenes are in `tools/blender/` (base model `Benchpeek_STM32MP257F-DK.blend`,
+  `..._USB_OTG_board_fade_60fps.blend`, `..._USB_OTG_isolated_60fps.blend`); all were
+  saved with **Blender 5.2** (4.5 opens them but loses the EEVEE engine setting). The
+  intro movie shown in the app is the fade scene re-aimed by `retarget_usba.py` at CN19
+  (dual USB-A host port) with a USB-A plug built in the script. History of the target
+  port (all user statements, 2026-09-21): CN15 (OTG) - "the board cannot read from it";
+  CN21 (ST-LINK) - "power only"; final answer: USB-A. The idea: benchpeek runs on the
+  board and reads the device plugged into the board's USB host. The 89 ST STEP source
+  models (58 MB) and two intermediate iterations stayed on the Linux side under
+  `~/Documents/Codex/2026-09-10/csa/`. On the build server Blender 5.2.2 sits in
+  `~/blender/`; a full render takes ~6 min.
 - Git identity was unset on the Linux side; commits there are authored
   `Unknown <ddnemet@ddnemet.tail6ed0b4.ts.net>`. Set `user.name`/`user.email`
   on the Mac.
@@ -73,12 +74,9 @@ The README and `docs/plugin-sdk.md` cover the features themselves.
   unit tests without the WASM plugins.
 - `src/ws/`: `mod.rs` (state, chrome), `pages.rs`, `files.rs`, `overlays.rs`,
   `widgets.rs`, `theme.rs`, `demo.rs`, `bg.rs`. Fonts/icons in `assets/fonts`.
-- Connection-guide animation: `tools/blender/plugin_intro.py` (+ `pack_bpk.py`)
-  builds a monochrome "plug into CN15" movie, but it is only a **stand-in board**
-  and has not been rendered to the app yet (Blender on the Mac is CPU-only,
-  ~9 s/frame). Plan: render on the build PC with the real model, then point
-  `MOVIE` in `onboarding.rs` at `board_intro_v2.bpk`. The Blender masters live
-  on the Linux side (see above).
+- Connection-guide animation: see the Blender note above; the app plays
+  `assets/board_intro.bpk` (real model, USB-A). The guide texts in `onboarding.rs`
+  and `ws/overlays.rs` say USB-A / CN19.
 - Live mode (2026-09-20): Devices -> Custom Board -> Connect, or
   `BENCHPEEK_LIVE=user@host` (+ `BENCHPEEK_SSH_KEY`), streams a real device's
   journal and CPU/RAM/disk into the Live monitor (`src/ws/live.rs`, reusing

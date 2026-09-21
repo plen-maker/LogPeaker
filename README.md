@@ -49,16 +49,27 @@ rules are wired to it yet.
 
 ### Connection-guide animation (Blender)
 
-`tools/blender/plugin_intro.py` builds the 8 s / 60 fps CN15 plug-in scene and
-`tools/blender/pack_bpk.py` packs the frames into the BPK2 format the app reads:
+The intro movie is rendered from the real board model in
+`tools/blender/Benchpeek_USB_OTG_board_fade_60fps.blend` (saved with Blender 5.2),
+re-aimed at **CN19, the dual USB-A host port** - where the device to inspect is plugged
+in. CN15 (USB OTG) and CN21 (ST-LINK / power) cannot read a device. The scene's plug was
+USB-C, so `retarget_usba.py` builds a USB-A plug (shell, tongue, contacts, overmould).
 
 ```sh
-Blender -b -P tools/blender/plugin_intro.py -- --all --out tools/blender/frames --samples 12
-python3 tools/blender/pack_bpk.py tools/blender/frames crates/benchpeek-app/assets/board_intro_v2.bpk
+# 1. camera/focus/rotation path of the base scene's flight
+blender-5.2 -b tools/blender/Benchpeek_STM32MP257F-DK.blend \
+    -P tools/blender/export_paths.py -- /tmp/base_paths.json
+# 2. re-aim the fade scene at CN19's lower port, new plug + ring + caption, render 480 frames
+#    (EEVEE, ~6 min on 32 cores)
+blender-5.2 -b tools/blender/Benchpeek_USB_OTG_board_fade_60fps.blend \
+    -P tools/blender/retarget_usba.py -- --paths /tmp/base_paths.json \
+    --out frames --res 960x540 --samples 32 --quality 90 --all
+# 3. recompress (ffmpeg -q:v 9) and pack; held frames (first 60, last 65) share payloads
+python3 tools/blender/pack_bpk.py frames crates/benchpeek-app/assets/board_intro.bpk \
+    --identity --first 1 --holds 59,415
 ```
 
-The board in that scene is a stand-in; replace `build_board()` (and `PORT_POS`)
-with the real model.
+`render_scene.py` renders any of the scenes exactly as saved (no re-aiming).
 
 ## Workspace
 
@@ -254,10 +265,10 @@ runs net name -> signal name instead of net geometry -> plot pixel.
 ## Connection guide
 
 Launch opens a skippable, 8 s / 60 fps animation of the actual
-STM32MP257F-DK (MB1605C): an overhead-to-port camera move onto CN15 (USB-C
-OTG/device), after which the board fades into transparent context while
-the port and cable stay opaque and a cyan contour highlights where to plug
-in. Reduce motion holds on the final frame instead of animating. Replay or
+STM32MP257F-DK (MB1605C): an overhead-to-port camera move onto CN19 (the
+dual USB-A host port), after which the board fades into transparent context
+while the port and cable stay opaque and a cyan contour highlights where to
+plug in. Reduce motion holds on the final frame instead of animating. Replay or
 reopen it using **Connection guide** in the top bar. **Enable serial
 auto-connect** uses the existing USB-serial source discovery; it does not
 identify the board model or guarantee a telemetry stream. A Linux console

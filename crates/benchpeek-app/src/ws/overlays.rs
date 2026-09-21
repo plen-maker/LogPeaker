@@ -483,7 +483,7 @@ impl Workspace {
 }
 
 impl Workspace {
-    /// "Connect a device" guide: plays the Blender-rendered CN15 plug-in movie.
+    /// "Connect a device" guide: plays the Blender-rendered USB-A (CN19) plug-in movie.
     fn guide_ui(&mut self, ctx: &Context, full: Rect, now: f64) {
         self.guide_t.set(if self.guide_open { 1.0 } else { 0.0 }, now, 220.0);
         let t = self.guide_t.get(now);
@@ -519,8 +519,8 @@ impl Workspace {
             }
             ui.painter().rect_stroke(movie, cr(12.0), Stroke::new(1.0, border()), egui::StrokeKind::Inside);
             let ty = movie.bottom() + 26.0;
-            text(ui.painter(), Pos2::new(rect.left() + 32.0, ty), Align2::LEFT_CENTER, "Connect your computer to CN15 - USB-C OTG / device.", font(14.0, "inter_medium"), TEXT);
-            text(ui.painter(), Pos2::new(rect.left() + 32.0, ty + 24.0), Align2::LEFT_CENTER, "The other connectors on the board are inputs (power, ST-LINK). Automatic device detection is not wired in this demo build.", font(12.0, "inter"), TEXT3);
+            text(ui.painter(), Pos2::new(rect.left() + 32.0, ty), Align2::LEFT_CENTER, "Plug your device into the USB-A host port (CN19).", font(14.0, "inter_medium"), TEXT);
+            text(ui.painter(), Pos2::new(rect.left() + 32.0, ty + 24.0), Align2::LEFT_CENTER, "benchpeek reads it via the board's USB host - CN15 (OTG) and CN21 (ST-LINK / power) can't read a device.", font(12.0, "inter"), TEXT3);
             let by = rect.bottom() - 24.0 - 44.0;
             if ghost_button(ui, Id::new("guide_replay"), Rect::from_min_size(Pos2::new(rect.right() - 32.0 - 108.0 - 12.0 - 108.0, by), Vec2::new(108.0, 44.0)), "Replay", Some(ic::REFRESH_CW)).clicked() {
                 act = 2;

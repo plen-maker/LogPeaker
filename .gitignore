@@ -11,3 +11,5 @@ __pycache__/
 /shots-live
 /tools/blender/*.bpk
 /shots-anim
+# Blender leaves a .blend1 backup next to every .blend it saves
+*.blend1

@@ -52,10 +52,16 @@ The README and `docs/plugin-sdk.md` cover the features themselves.
 ## Environment notes
 - The Linux side had no display, so no UI change was ever seen running, only
   built and unit-tested. On macOS, run the app and look at it.
-- The Blender masters for the intro animation are NOT in git (they lived under
-  `~/Documents/Codex/2026-09-10/csa/` on the Linux side). Only the baked
-  `crates/benchpeek-app/assets/board_intro.bpk` is tracked; the build needs
-  nothing else.
+- Blender scenes for making more intro animations are in `tools/blender/`: the
+  base board model (`Benchpeek_STM32MP257F-DK.blend`), the latest scene
+  (`..._USB_OTG_board_fade_60fps.blend`) and an isolated-port variant
+  (`..._USB_OTG_isolated_60fps.blend`). Contents were never opened from the
+  Linux sandbox (no Blender there); the names and save times are all that's
+  known. The scripts that drive them (`plugin_intro.py`, `pack_bpk.py`) are on
+  `origin/mono-workspace-ui`. Two intermediate iterations and the 89 ST STEP
+  source models (58 MB) stayed on the Linux side under
+  `~/Documents/Codex/2026-09-10/csa/`. The app itself builds from the baked
+  `crates/benchpeek-app/assets/board_intro.bpk` alone.
 - Git identity was unset on the Linux side; commits there are authored
   `Unknown <ddnemet@ddnemet.tail6ed0b4.ts.net>`. Set `user.name`/`user.email`
   on the Mac.

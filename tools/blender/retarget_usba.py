@@ -97,44 +97,94 @@ for o in list(bpy.data.objects):
         o.hide_render = True
         o.hide_viewport = True
 
-def box(name, size, loc, material, bevel=0.0):
+import bmesh
+
+def _link(o, smooth=True):
+    o.parent = ins
+    for c in ins.users_collection:
+        c.objects.link(o)
+    if smooth:
+        o.data.shade_smooth()
+    return o
+
+def box(name, size, loc, material, bevel=0.0, segments=6, smooth=True):
     """Cube of `size` at local `loc`, parented to the insertion empty."""
     me = bpy.data.meshes.new(name)
-    import bmesh
     bm = bmesh.new(); bmesh.ops.create_cube(bm, size=1.0); bm.to_mesh(me); bm.free()
     o = bpy.data.objects.new(name, me)
     o.scale = size
     o.location = loc
-    o.parent = ins
     o.data.materials.append(material)
     if bevel:
-        m = o.modifiers.new("Bevel", "BEVEL"); m.width = bevel; m.segments = 4; m.limit_method = "ANGLE"
-    for c in ins.users_collection:
-        c.objects.link(o)
-    return o
+        m = o.modifiers.new("Bevel", "BEVEL"); m.width = bevel; m.segments = segments
+        m.limit_method = "NONE"; m.profile = 0.7
+    return _link(o, smooth)
+
+def taper(name, y_front, y_back, rx_front, rz_front, rx_back, rz_back, cx, cz, material, segs=48):
+    """Elliptical tapered tube along y (strain relief), local coords."""
+    me = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    ring = lambda y, rx, rz: [bm.verts.new((cx + rx * math.cos(2 * math.pi * i / segs), y, cz + rz * math.sin(2 * math.pi * i / segs))) for i in range(segs)]
+    steps = 8
+    rings = []
+    for k in range(steps + 1):
+        t = k / steps
+        e = t * t * (3 - 2 * t)          # smooth blend: fat at the body, slim at the cable
+        rings.append(ring(y_front + (y_back - y_front) * t, rx_front + (rx_back - rx_front) * e, rz_front + (rz_back - rz_front) * e))
+    for k in range(steps):
+        for i in range(segs):
+            bm.faces.new((rings[k][i], rings[k][(i + 1) % segs], rings[k + 1][(i + 1) % segs], rings[k + 1][i]))
+    bm.faces.new(rings[0])
+    bm.to_mesh(me); bm.free()
+    o = bpy.data.objects.new(name, me)
+    o.data.materials.append(material)
+    return _link(o)
 
 def make_usba_plug():
     nickel = bpy.data.materials.get("Satin nickel")
-    white = bpy.data.materials.get("White cable polymer")
     gold = bpy.data.materials.get("Gold plated contacts")
-    dark = bpy.data.materials.new("USB-A tongue plastic"); dark.diffuse_color = (0.02, 0.02, 0.02, 1)
-    dark.use_nodes = True
-    dark.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.02, 0.02, 0.02, 1)
-    dark.node_tree.nodes["Principled BSDF"].inputs["Roughness"].default_value = 0.5
+    def pmat(name, base, rough, metal=0.0):
+        m = bpy.data.materials.new(name); m.use_nodes = True
+        b = m.node_tree.nodes["Principled BSDF"]
+        b.inputs["Base Color"].default_value = (*base, 1); b.inputs["Roughness"].default_value = rough; b.inputs["Metallic"].default_value = metal
+        return m
+    poly = pmat("USB plug polymer", (0.075, 0.078, 0.085), 0.38)   # graphite moulding (white blew out under the key lights)
+    grip = pmat("USB plug grip", (0.045, 0.047, 0.052), 0.55)
+    tongue_m = pmat("USB-A tongue plastic", (0.015, 0.015, 0.017), 0.5)
     cx, cz = X_CN21, Z_PLUG           # local centre line of the old plug
-    w, h, t = 0.0120, 0.0045, 0.0003  # USB-A shell: 12.0 x 4.5 mm, 0.3 mm wall
+    w, h = 0.0120, 0.0045             # USB-A shell 12.0 x 4.5 mm
     y0, y1 = -0.0497, -0.0377         # shell back / tip (12 mm)
     ym, yl = (y0 + y1) / 2, (y1 - y0)
-    box("USB-A shell top", (w, yl, t), (cx, ym, cz + h / 2 - t / 2), nickel)
-    box("USB-A shell bottom", (w, yl, t), (cx, ym, cz - h / 2 + t / 2), nickel)
-    box("USB-A shell left", (t, yl, h), (cx - w / 2 + t / 2, ym, cz), nickel)
-    box("USB-A shell right", (t, yl, h), (cx + w / 2 - t / 2, ym, cz), nickel)
-    box("USB-A tongue", (0.0104, 0.0095, 0.0016), (cx, y1 - 0.0055, cz - 0.0003), dark)
+    # shell: rounded outer box minus an inner box (0.3 mm wall), open at the tip
+    outer = box("USB-A shell", (w, yl, h), (cx, ym, cz), nickel, bevel=0.0006, segments=4)
+    inner = box("USB-A shell bore", (w - 0.0006, yl + 0.002, h - 0.0006), (cx, ym + 0.0011, cz), nickel, bevel=0.0003, segments=3)
+    inner.hide_render = True; inner.hide_viewport = True
+    bm_ = outer.modifiers.new("Bore", "BOOLEAN"); bm_.operation = "DIFFERENCE"; bm_.object = inner; bm_.solver = "EXACT"
+    # tongue with four contacts
+    box("USB-A tongue", (0.0104, 0.0095, 0.0016), (cx, y1 - 0.0055, cz - 0.0003), tongue_m, smooth=False)
     for i, dx in enumerate((-0.0032, -0.0011, 0.0011, 0.0032)):
-        box(f"USB-A contact {i}", (0.0009, 0.0080, 0.00025), (cx + dx, y1 - 0.0062, cz + 0.0006), gold)
-    box("USB-A overmould", (0.0146, 0.0106, 0.0080), (cx, y0 - 0.0053, cz), white, bevel=0.0018)
+        box(f"USB-A contact {i}", (0.0009, 0.0080, 0.00025), (cx + dx, y1 - 0.0062, cz + 0.0006), gold, smooth=False)
+    # collar between shell and body
+    box("USB-A collar", (0.0138, 0.0030, 0.0068), (cx, y0 - 0.0015, cz), grip, bevel=0.0012, segments=4)
+    # moulded body (rounded, with grip ridges) and strain relief
+    yb = y0 - 0.0030
+    box("USB-A body", (0.0152, 0.0170, 0.0084), (cx, yb - 0.0085, cz), poly, bevel=0.0030, segments=8)
+    for side in (1, -1):
+        for k in range(5):
+            box(f"USB-A grip {side}{k}", (0.0100, 0.0007, 0.0004), (cx, yb - 0.0040 - k * 0.0020, cz + side * 0.0042), grip, bevel=0.0002, segments=2)
+    taper("USB-A strain relief", yb - 0.0165, yb - 0.0310, 0.0062, 0.0033, 0.0020, 0.0020, cx, cz, poly)
 if "plug" not in SKIP:
     make_usba_plug()
+
+cable_obj = bpy.data.objects.get("White cable")
+if cable_obj:
+    cable_obj.data.resolution_u = 32
+    cable_obj.data.bevel_resolution = 8
+    cable_obj.data.bevel_depth = 0.0015
+    cable_obj.data.use_fill_caps = True
+    pm = bpy.data.materials.get("USB plug polymer")
+    if pm:
+        cable_obj.data.materials.clear(); cable_obj.data.materials.append(pm)
 
 # ---- 4. highlight ring: a rounded rectangle around the USB-A opening
 old_ring = bpy.data.objects.get("USB-C · highlighted opening")
@@ -224,7 +274,10 @@ res = [int(v) for v in arg("--res", "960x540").split("x")]
 s.render.resolution_x, s.render.resolution_y = res
 s.render.resolution_percentage = 100
 try:
-    s.eevee.taa_render_samples = int(arg("--samples", "32"))
+    s.eevee.taa_render_samples = int(arg("--samples", "64"))
+    for attr, val in (("shadow_ray_count", 3), ("shadow_step_count", 12)):
+        if hasattr(s.eevee, attr):
+            setattr(s.eevee, attr, val)
 except Exception:
     pass
 s.render.image_settings.file_format = "JPEG"

@@ -17,7 +17,7 @@ can-raw = { path = "../../plugins/can-raw" }
 anyhow = "1"
 fastrand = "2"
 serialport = "4"
-eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "glow", "links", "wayland", "winit/default", "x11"] }
+eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "glow", "links", "wayland", "x11"] }
 egui = "0.36.1"
 egui_plot = "0.37.0"
 socketcan = { version = "4.0.0", features = ["enumerate"] }

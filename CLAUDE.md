@@ -31,6 +31,42 @@ The README and `docs/plugin-sdk.md` cover the features themselves.
 - `SequenceRunner` treats a signal older than 3 s as no data, so a dead
   transport can't leave a step passed on a frozen value.
 
+## Live SWD memory monitoring (in progress)
+
+Agreed direction with the user: read a running target's RAM live through
+the ST-Link's own SWD debug port, instead of only decoding whatever a
+transport happens to send. No existing benchpeek source can do this -
+Serial/CAN/USB all wait for the target to talk first. This would let a
+decoder plugin expose any firmware variable as a signal with zero firmware
+changes, which is the "nobody's done this in one open tool" angle the user
+wants (closest existing tools - SEGGER Ozone, STM32CubeMonitor - are
+closed/single-vendor).
+
+Board power note from the user: the STM32MP257F-DK needs 5V/3A over
+USB-C PD (confirmed via ST community + UM3385) to run reliably - a bare
+laptop port isn't enough. CN21 (ST-Link) and the dedicated PWR input are
+separate physical connectors on this board, so there's no conflict between
+powering it (power bank or mains into PWR) and having ST-Link's USB-C go
+straight to whatever runs benchpeek.
+
+Progress:
+- `crates/benchpeek-app/src/stlink.rs` - step 1, a one-shot probe, not yet
+  a `Source`. Sends `STLINK_APIV3_GET_VERSION_EX` (0xFB) on bulk OUT 0x01
+  and parses the version off bulk IN 0x81, both on ST-Link's own interface
+  0 - reuses the exact open/claim/transfer_blocking pattern `source.rs`'s
+  raw USB transport already proved against real hardware. The byte layout
+  came from OpenOCD's real driver (`stlink_usb.c`'s `stlink_usb_version()`),
+  not guesswork - see the module doc comment for the citation.
+- Parsing is unit-tested. The end-to-end hardware test
+  (`stlink::tests::probes_a_real_stlinks_version`, `#[ignore]`d) has **not**
+  been re-run against real hardware in this session - the simulated
+  ST-Link this repo's sandbox had earlier in the week is gone from the
+  current sandbox instance. Run it for real before trusting this module.
+- Not started yet: the actual SWD debug commands (halt/read-memory), and
+  deciding how a decoder plugin gets told which addresses/struct layout to
+  poll (`constructor(config)` could carry an ELF's debug symbols, similar
+  to how `can-dbc-py` takes a `.dbc`).
+
 ## Open items
 - **macOS build is expected to fail** (not compiled there yet): `benchpeek-app`
   depends unconditionally on `socketcan` with the `enumerate` feature, which

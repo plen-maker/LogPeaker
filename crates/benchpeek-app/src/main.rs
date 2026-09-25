@@ -8,6 +8,7 @@ mod app;
 mod files;
 mod onboarding;
 mod source;
+mod stlink;
 mod theme;
 mod yocto;
 

@@ -18,7 +18,8 @@ fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 760.0])
-            .with_title("benchpeek"),
+            .with_title("benchpeek")
+            .with_decorations(false),
         ..Default::default()
     };
     eframe::run_native(

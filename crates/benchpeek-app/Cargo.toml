@@ -26,3 +26,14 @@ env_logger = "0.11"
 log = "0.4"
 
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Pinned to what gbm 0.15 itself depends on (drm 0.12), so BufferObject
+# actually implements this crate's own `drm::buffer::Buffer` trait instead
+# of Cargo unifying two incompatible `drm` majors in the dependency graph.
+drm = "0.12"
+gbm = "0.15"
+glow = "0.17"
+glutin = "0.32"
+egui_glow = "0.36.1"
+raw-window-handle = "0.6.2"

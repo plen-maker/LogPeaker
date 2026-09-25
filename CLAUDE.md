@@ -49,23 +49,34 @@ separate physical connectors on this board, so there's no conflict between
 powering it (power bank or mains into PWR) and having ST-Link's USB-C go
 straight to whatever runs benchpeek.
 
-Progress:
-- `crates/benchpeek-app/src/stlink.rs` - step 1, a one-shot probe, not yet
-  a `Source`. Sends `STLINK_APIV3_GET_VERSION_EX` (0xFB) on bulk OUT 0x01
-  and parses the version off bulk IN 0x81, both on ST-Link's own interface
-  0 - reuses the exact open/claim/transfer_blocking pattern `source.rs`'s
-  raw USB transport already proved against real hardware. The byte layout
-  came from OpenOCD's real driver (`stlink_usb.c`'s `stlink_usb_version()`),
-  not guesswork - see the module doc comment for the citation.
-- Parsing is unit-tested. The end-to-end hardware test
-  (`stlink::tests::probes_a_real_stlinks_version`, `#[ignore]`d) has **not**
-  been re-run against real hardware in this session - the simulated
-  ST-Link this repo's sandbox had earlier in the week is gone from the
-  current sandbox instance. Run it for real before trusting this module.
-- Not started yet: the actual SWD debug commands (halt/read-memory), and
-  deciding how a decoder plugin gets told which addresses/struct layout to
-  poll (`constructor(config)` could carry an ELF's debug symbols, similar
-  to how `can-dbc-py` takes a `.dbc`).
+Progress (`crates/benchpeek-app/src/stlink.rs`, not yet a `Source`):
+- `StlinkHandle::open` + `.command()`: shared open/claim/transfer_blocking
+  plumbing (reuses the exact pattern `source.rs`'s raw USB transport
+  already proved against real hardware), one `command(cmd_bytes,
+  max_resp_len)` call per ST-Link command.
+- Implemented: `.version()` (`STLINK_APIV3_GET_VERSION_EX`, 0xFB - a plain
+  query, answers directly with its data), `.enter_swd_debug()` and
+  `.read_idcode()` (both under `STLINK_DEBUG_COMMAND`, 0xF2 - answer with a
+  status byte first, `STLINK_DEBUG_ERR_OK`/`_FAULT`). Every byte layout is
+  cited to the specific OpenOCD `stlink_usb.c` function it came from in
+  each method's doc comment, not guessed.
+- **Not implemented: reading target memory.** OpenOCD's `read_mem32` needs
+  a second USB transaction (a follow-up status query) whose exact byte
+  layout (ap_num/csw packing) wasn't pinned down with enough confidence to
+  ship - landed the verified half (link-up + IDCODE) instead of guessing
+  at the rest. That's the next step.
+- All parsing is unit-tested (version, debug-status OK/fault, IDCODE
+  offset/short-response). The two hardware tests
+  (`probes_a_real_stlinks_version`, `enters_swd_and_reads_a_real_idcode`,
+  both `#[ignore]`d) have **not** been run against real hardware - no
+  simulated or real ST-Link has been present in any sandbox instance since
+  the raw USB transport work. Run both for real before trusting this
+  module; `enters_swd_and_reads_a_real_idcode` is the actual milestone
+  (proves the debug link comes up and identifies a real core).
+- Still undecided: how a decoder plugin gets told which addresses/struct
+  layout to poll once memory reads exist (`constructor(config)` could
+  carry an ELF's debug symbols, similar to how `can-dbc-py` takes a
+  `.dbc`).
 
 ## Open items
 - **macOS build is expected to fail** (not compiled there yet): `benchpeek-app`

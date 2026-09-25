@@ -13,6 +13,8 @@ mod theme;
 mod yocto;
 
 fn main() -> eframe::Result<()> {
+    env_logger::init();
+    log::info!("benchpeek starting up, about to call eframe::run_native");
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 760.0])

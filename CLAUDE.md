@@ -78,6 +78,78 @@ Progress (`crates/benchpeek-app/src/stlink.rs`, not yet a `Source`):
   carry an ELF's debug symbols, similar to how `can-dbc-py` takes a
   `.dbc`).
 
+## Yocto build server & SD card flashing
+
+Real hardware, not simulated: STM32MP257F-DK board, ST-Link over USB-C for
+SWD+UART, a 16GB SanDisk microSD, and a Yocto/OpenSTLinux build server
+(`192.168.100.236`, user `yocto`, SSH key auth, docker container
+`stm32mp2-builder`). Workspace inside the container:
+`/yocto-st/projects/stm32mp2-62` (`source layers/openembedded-core/oe-init-build-env build-62`
+before any `bitbake`). Flashable images land in
+`build-62/tmp-glibc/deploy/images/stm32mp25-disco/`.
+
+- **Never write to a physical device (`/dev/sd*`, `/dev/mmcblk*`, `/dev/nvme*`)
+  without an explicit go-ahead in that specific turn.** The user has a past
+  incident (an NVMe got flashed by accident) and was explicit: only flash
+  when told to, right then. Building/staging images and SSHing into the
+  build server are fine without asking; the line is the actual write.
+- Flashing recipe that works: a flashlayout `.tsv` under
+  `deploy/images/stm32mp25-disco/flashlayout_st-image-weston/<variant>/`
+  gives `(name, offset, binary)` rows for `IP == mmc0`. For each, `dd
+  if=<binary> of=/dev/sdX bs=512 seek=<offset/512> conv=notrunc,fsync`. Do
+  the actual `dd` inside `docker run --rm --device=/dev/sdX ubuntu:22.04
+  ...` on the build server - it's root and has the `disk`-group-free device
+  node without needing `sudo` (the `yocto` user has no passwordless sudo,
+  and interactive SSH can't supply a password).
+  - Use the Bash tool's own timeout for the whole SSH call (the `rootfs`
+    partition alone is ~1GB and takes 3+ minutes over this USB reader at
+    ~5-7MB/s); do **not** additionally wrap the command in a short shell
+    `timeout N` - if that fires, the remote write actually keeps running
+    undisturbed (docker doesn't get the local SSH client's death signal
+    propagated to a killed write), but the local timeout host loses track
+    of it and reports a false failure.
+  - `conv=fsync` on every `dd` is required. Verifying immediately after
+    writing (read the same bytes back from the device in the same session)
+    can give a **false positive**: the readback can hit the build server's
+    own page cache instead of the physical card, so it looks byte-perfect
+    even if the physical write never completed. The only way to know for
+    sure is to physically eject/reinsert the card (or unplug/replug the
+    reader) between writing and verifying, which drops the cache and forces
+    a real read. This actually happened once this session - full write
+    reported success and read back clean, then failed a real check after
+    reinsertion, and had to be redone.
+- **`opteemin` vs `optee` flashlayout - pick `optee` for this board if you
+  want a display.** `local.conf` has `BOOTSCHEME_LABELS:append = " opteemin"`
+  (added for the MeerkatOS work), so both variants get built side by side
+  under `flashlayout_st-image-weston/opteemin/` and `.../optee/`. The
+  `opteemin` (OP-TEE minimal) variant's RIF config
+  (`a35-td/optee/stm32mp257f-dk-ca35tdcid-ostl-rif.dtsi` in the fetched
+  external device-tree source) marks the LTDC's L3 sub-resource
+  `RIF_SEC` even in the non-secure profile, so Linux's `display-controller`
+  driver fails to probe (`error: -13`, then wlroots/meerkat-compositor logs
+  "Failed to open any DRM device" and never gets `/dev/dri/card0`). The
+  plain `optee` (full) flashlayout
+  (`FlashLayout_sdcard_stm32mp257f-dk-ca35tdcid-ostl-optee.tsv` - only
+  `fsbla1/fsbla2/fip-a` differ, `bootfs/vendorfs/rootfs/userfs` are the same
+  files) grants Linux the LTDC properly and the display comes up. Confirmed
+  working on real hardware 2026-09-25. Whether to just remove the
+  `opteemin` line from `local.conf` (so it stops building a variant nobody
+  wants) is still an open question for the user.
+- Serial console: ST-Link exposes two `/dev/ttyACM*` devices; the shell/log
+  one is typically `ttyACM0` at 115200 8N1 (`stty -F /dev/ttyACM0 115200
+  cs8 -cstopb -parenb raw -echo`). The board auto-logs-in to a root shell,
+  handy for live `systemctl`/`journalctl` checks without a separate login
+  step.
+- `weston-graphical-session.service` can come up `disabled`/`inactive` right
+  after first boot even when everything is otherwise fine, with a "unit
+  file ... changed on disk, run daemon-reload" warning - a stale systemd
+  unit cache from first-boot scripts touching the unit file after systemd's
+  initial scan. `systemctl daemon-reload && systemctl start
+  weston-graphical-session.service` picks it up; check
+  `journalctl -b | grep -i weston` for the real underlying error (that's
+  where the DRM `-13` above actually surfaced) rather than trusting
+  `systemctl status` on the top-level unit alone.
+
 ## Open items
 - **macOS build is expected to fail** (not compiled there yet): `benchpeek-app`
   depends unconditionally on `socketcan` with the `enumerate` feature, which

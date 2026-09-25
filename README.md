@@ -205,8 +205,8 @@ runs net name -> signal name instead of net geometry -> plot pixel.
 ## Connection guide
 
 Launch opens a skippable, 8 s / 60 fps animation of the actual
-STM32MP257F-DK (MB1605C): an overhead-to-port camera move onto CN15 (USB-C
-OTG/device), after which the board fades into transparent context while
+STM32MP257F-DK (MB1605C): an overhead-to-port camera move onto CN21 (ST-Link
+USB-C), after which the board fades to 75% opacity while
 the port and cable stay opaque and a cyan contour highlights where to plug
 in. Reduce motion holds on the final frame instead of animating. Replay or
 reopen it using **Connection guide** in the top bar. **Enable serial

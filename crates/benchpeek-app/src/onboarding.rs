@@ -1,4 +1,4 @@
-//! MB1605C animation: full board transitions to transparent context around CN15 USB OTG.
+//! MB1605C animation: full board transitions to 75% opacity around CN21 ST-Link.
 //! Connector identities: ST UM3385 rev 2, figure 4 (CN21 ST-LINK, CN15 USB3).
 use eframe::egui::{self, Color32, Rect, Vec2};
 use std::time::Instant;
@@ -85,7 +85,9 @@ impl Welcome {
             );
         }
         if self.image_error {
-            ui.label("The connection animation could not be loaded. Connect USB-C to CN15.");
+            ui.label(
+                "The connection animation could not be loaded. Connect USB-C to CN21 (ST-Link).",
+            );
         }
         if !self.reduced_motion && frame < FRAME_COUNT - 1 {
             ui.ctx()
@@ -93,8 +95,8 @@ impl Welcome {
         }
         ui.add_space(12.0);
         ui.vertical_centered(|ui| {
-            ui.label("Connect your computer to CN15 — USB-C OTG / device.");
-            ui.weak("STM32MP257F-DK · CN15 connection guide");
+            ui.label("Connect your computer to CN21 — ST-Link USB-C.");
+            ui.weak("STM32MP257F-DK · CN21 ST-Link connection guide");
             if ports.is_empty() {
                 ui.label("Waiting for a USB serial device…");
             } else {

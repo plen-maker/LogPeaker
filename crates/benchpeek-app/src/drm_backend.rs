@@ -58,6 +58,11 @@ pub fn run(mut app: crate::app::BenchpeekApp) -> anyhow::Result<()> {
             .open("/dev/dri/card0")
             .context("opening /dev/dri/card0 - is meerkat-compositor still running?")?,
     );
+    // Reading resources/connectors works for any fd, but mode-setting
+    // (set_crtc, page_flip) needs this process to hold the DRM master lock -
+    // otherwise it fails with EACCES even as root.
+    card.acquire_master_lock()
+        .context("acquire_master_lock - is another compositor still holding it?")?;
 
     let res = card.resource_handles().context("DRM resource_handles")?;
     let connectors: Vec<connector::Info> = res

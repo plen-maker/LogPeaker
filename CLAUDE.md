@@ -149,6 +149,41 @@ before any `bitbake`). Flashable images land in
   `journalctl -b | grep -i weston` for the real underlying error (that's
   where the DRM `-13` above actually surfaced) rather than trusting
   `systemctl status` on the top-level unit alone.
+- **benchpeek segfaults as a Wayland client under meerkat-compositor** -
+  confirmed on real hardware 2026-09-25, unchanged across an eframe
+  wgpu-vs-glow fix, an `EGL_PLATFORM` hint, and disabling window
+  decorations. `coredumpctl` + `eu-stack` (no gdb on the board) show the
+  crash is inside the vendor GC-Nano EGL driver's own
+  `wl_proxy_create_wrapper` call (SEGV_MAPERR, null-proxy pattern),
+  happening while the driver bootstraps its own internal Wayland
+  connection during `eglCreateWindowSurface` - not benchpeek's or
+  glutin's code, and there's no source or vendor doc to patch it from
+  here. This is a known-quirky GPU stack: `meta-meerkat`'s own
+  `recipes-graphics/wlroots/files/0001-egl-tolerate-vivante-device-query.patch`
+  already works around a *different* GC-Nano EGL bug
+  (`eglQueryDeviceStringEXT` failing), and a comment in
+  `meerkat-compositor.c` (near `wlr_output_commit_state`, the frame
+  callback) documents forcing full-frame damage every commit to sidestep
+  a suspected partial-damage-region bug interacting with this board's
+  `WL_OUTPUT_TRANSFORM_90` (the panel is driven rotated). Both are
+  wlroots-side patches; a generic Wayland client library like
+  winit/glutin gets none of them. **Fix in progress:**
+  `crates/benchpeek-app/src/drm_backend.rs` drives `/dev/dri/card0`
+  directly via GBM+EGL (`BENCHPEEK_DRM=1`), the same way
+  meerkat-compositor itself does, bypassing the driver's Wayland-client
+  code entirely instead of chasing individual quirks in it. v0 renders
+  only (no input yet) and re-sets the CRTC every frame instead of
+  page-flipping. Not yet confirmed working on real hardware - only one
+  process can hold the DRM master, so meerkat-compositor must be stopped
+  first when testing this.
+- `meta-meerkat` is a much bigger existing project than "a demo
+  compositor": `recipes-graphics/wayland/files/` alone has ~20 patches
+  building out a phone-like desktop-shell (app-window management, a
+  "genie" minimize/restore animation, lock screen, panel autohide,
+  screenshot authorization) plus `recipes-extended/flatpak` patches for
+  sandboxed app support. Worth searching here for prior art before
+  solving a display/input/GPU problem on this board from scratch again -
+  there may already be a patch or pattern for it.
 
 ## Open items
 - **macOS build is expected to fail** (not compiled there yet): `benchpeek-app`

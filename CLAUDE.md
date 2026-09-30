@@ -16,12 +16,29 @@ The user's own "Workspace UI" (`src/ws/`, previously only on
 `origin/mono-workspace-ui` and demo-data-only per this file's old notes) is
 now the **default** front end on `main` - `cargo run -p benchpeek-app` opens
 it; `--classic` still runs the old `app::BenchpeekApp` tab cockpit. Brought
-in selectively (not merged - see the commit that did this for why), so it's
-still at its original 1280x800 design grid, not yet adapted to the board's
-actual 1024x600 touchscreen. See `docs/CLAUDE_UI_BRIEF.hu.md` (Hungarian) for
-the user's own brief on that adaptation - read it before proposing layout
-changes; the visual direction is explicitly the user's to lead, not a design
-to hand over finished.
+in selectively (not merged - see the commit that did this for why). It's
+still at its original 1280x800 design grid (`ws::DESIGN_W/DESIGN_H`), scaled
+down to whatever window/screen it actually gets via `apply_scale()` +
+`egui::Context::set_zoom_factor` - not yet a from-scratch 1024x600 layout.
+
+**Confirmed correctly filling the board's actual 1024x600 screen
+2026-09-30**, via `BENCHPEEK_DRM=1`. Getting there needed a
+`drm_backend.rs` fix, not a `ws::` one: `RawInput::screen_rect` must be in
+*points*; feeding it the raw 1024x600 pixel size every frame (ignoring the
+current `pixels_per_point`, which `apply_scale` itself changes via
+`set_zoom_factor`) fed back into `apply_scale`'s own next computation and
+spiralled the zoom down to its 0.3x floor within a few frames - the user saw
+this as the UI rendering tiny in a corner. Fixed by dividing by
+`ctx.pixels_per_point()` before building `screen_rect` each frame, and
+setting `native_pixels_per_point` explicitly to a fixed 1.0 (this panel has
+no OS DPI concept). Only matters for the DRM path - `eframe::run_native`
+handles this conversion itself for the windowed path.
+
+See `docs/CLAUDE_UI_BRIEF.hu.md` (Hungarian) for the user's own brief on
+adapting the 1280x800 design to 1024x600 properly (not just via the
+automatic scale-down) - read it before proposing layout changes; the visual
+direction is explicitly the user's to lead, not a design to hand over
+finished.
 
 ## Commands
 - Run: `cargo run -p benchpeek-app`

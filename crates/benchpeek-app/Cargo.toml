@@ -4,6 +4,17 @@ version = "0.0.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Renderer back-end for the windowed (eframe::run_native) path only - the
+# BENCHPEEK_DRM path in drm_backend.rs always uses glow directly, regardless
+# of this. Desktop default is wgpu; embedded Wayland targets with an OpenGL
+# ES driver (e.g. STM32MP25 gcnano) build with `--no-default-features
+# --features glow` - wgpu crashes as a Wayland client on that driver
+# (see CLAUDE.md), confirmed on real hardware.
+default = ["wgpu"]
+wgpu = ["eframe/wgpu"]
+glow = ["eframe/glow"]
+
 [[bin]]
 name = "benchpeek"
 path = "src/main.rs"
@@ -17,17 +28,24 @@ can-raw = { path = "../../plugins/can-raw" }
 anyhow = "1"
 fastrand = "2"
 serialport = "4"
-eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "glow", "links", "wayland", "x11"] }
+eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "links", "wayland", "x11"] }
 egui = "0.36.1"
+# Direct dependency only to keep winit's default features (notably wayland-dlopen) enabled.
+winit = "0.30"
 egui_plot = "0.37.0"
-socketcan = { version = "4.0.0", features = ["enumerate"] }
 nusb = "0.2.7"
 env_logger = "0.11"
 log = "0.4"
 
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+[dependencies.chrono]
+version = "0.4"
+default-features = false
+features = ["clock"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
+socketcan = { version = "4.0.0", features = ["enumerate"] }
 # Pinned to what gbm 0.15 itself depends on (drm 0.12), so BufferObject
 # actually implements this crate's own `drm::buffer::Buffer` trait instead
 # of Cargo unifying two incompatible `drm` majors in the dependency graph.

@@ -1,11 +1,12 @@
-//! MB1605C animation: full board transitions to 75% opacity around CN21 ST-Link.
-//! Connector identities: ST UM3385 rev 2, figure 4 (CN21 ST-LINK, CN15 USB3).
+//! MB1605C animation: full board transitions to transparent context around CN19, the dual USB-A
+//! host port, where the device to inspect is plugged in. benchpeek reads that device through the
+//! board's USB host; CN15 (USB OTG) and CN21 (ST-LINK / power) are not used for that.
 use eframe::egui::{self, Color32, Rect, Vec2};
 use std::time::Instant;
 
 const MOVIE: &[u8] = include_bytes!("../assets/board_intro.bpk");
-const FRAME_COUNT: usize = 480;
-const FPS: f32 = 60.0;
+pub(crate) const FRAME_COUNT: usize = 480;
+pub(crate) const FPS: f32 = 60.0;
 
 pub struct Welcome {
     pub visible: bool,
@@ -85,9 +86,7 @@ impl Welcome {
             );
         }
         if self.image_error {
-            ui.label(
-                "The connection animation could not be loaded. Connect USB-C to CN21 (ST-Link).",
-            );
+            ui.label("The connection animation could not be loaded. Plug your device into the USB-A port (CN19).");
         }
         if !self.reduced_motion && frame < FRAME_COUNT - 1 {
             ui.ctx()
@@ -95,8 +94,8 @@ impl Welcome {
         }
         ui.add_space(12.0);
         ui.vertical_centered(|ui| {
-            ui.label("Connect your computer to CN21 — ST-Link USB-C.");
-            ui.weak("STM32MP257F-DK · CN21 ST-Link connection guide");
+            ui.label("Plug your device into the USB-A host port (CN19).");
+            ui.weak("STM32MP257F-DK · USB host connection guide");
             if ports.is_empty() {
                 ui.label("Waiting for a USB serial device…");
             } else {
@@ -121,7 +120,7 @@ impl Welcome {
     }
 }
 // Pack layout: BPK2, frame count (u32 LE), N pairs of absolute offset and length (u32 LE), JPEG payloads.
-fn decode_frame(frame: usize) -> Result<egui::ColorImage, ()> {
+pub(crate) fn decode_frame(frame: usize) -> Result<egui::ColorImage, ()> {
     let word = |at: usize| -> Result<usize, ()> {
         let bytes: [u8; 4] = MOVIE
             .get(at..at + 4)

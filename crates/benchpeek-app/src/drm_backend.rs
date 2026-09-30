@@ -14,8 +14,9 @@
 //! Wayland one. Only one process can hold the DRM master at a time, so
 //! meerkat-compositor must not be running while this is active.
 //!
-//! v0: renders only, no input handling yet (see the module doc on `main.rs`'s
-//! caller for how it's selected).
+//! Touch input (`touch_input.rs`) and real page-flipping are both wired in;
+//! see `main.rs` for how the app itself (`ws::Workspace` by default,
+//! `app::BenchpeekApp` under `--classic`) is selected.
 
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
@@ -50,7 +51,11 @@ impl AsFd for Card {
 impl BasicDevice for Card {}
 impl ControlDevice for Card {}
 
-pub fn run(mut app: crate::app::BenchpeekApp) -> anyhow::Result<()> {
+/// `build_app` gets the real `egui::Context` this loop creates below - it
+/// can't run any earlier, since neither `ws::Workspace::new` nor
+/// `app::BenchpeekApp` (for `--classic`) need anything else from an
+/// `eframe::CreationContext`, so there's no need to fake one up.
+pub fn run(build_app: impl FnOnce(&egui::Context) -> Box<dyn eframe::App>) -> anyhow::Result<()> {
     let card = Card(
         OpenOptions::new()
             .read(true)
@@ -141,7 +146,7 @@ pub fn run(mut app: crate::app::BenchpeekApp) -> anyhow::Result<()> {
         .map_err(|e| anyhow!("egui_glow::Painter::new: {e}"))?;
 
     let egui_ctx = egui::Context::default();
-    crate::theme::apply(&egui_ctx);
+    let mut app = build_app(&egui_ctx);
 
     log::info!("DRM backend up: {width}x{height} on {:?}", con.interface());
 

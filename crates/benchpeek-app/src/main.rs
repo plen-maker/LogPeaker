@@ -12,6 +12,8 @@ mod onboarding;
 mod source;
 mod stlink;
 mod theme;
+#[cfg(target_os = "linux")]
+mod touch_input;
 mod yocto;
 
 fn main() -> anyhow::Result<()> {

@@ -173,9 +173,32 @@ before any `bitbake`). Flashable images land in
   meerkat-compositor itself does, bypassing the driver's Wayland-client
   code entirely instead of chasing individual quirks in it. v0 renders
   only (no input yet) and re-sets the CRTC every frame instead of
-  page-flipping. Not yet confirmed working on real hardware - only one
-  process can hold the DRM master, so meerkat-compositor must be stopped
-  first when testing this.
+  page-flipping.
+  **Confirmed rendering on real hardware 2026-09-30**: with
+  `card.acquire_master_lock()` added (mode-setting needs DRM master, not
+  just root - reading resources/connectors works on any fd, but
+  `set_crtc` doesn't without it) and `meerkat-compositor` fully stopped,
+  `BENCHPEEK_DRM=1 /usr/bin/benchpeek` ran a 60s render loop on the
+  LVDS panel with zero errors and was visually confirmed on the actual
+  screen. Still v0: no input yet, and re-sets the CRTC every frame
+  instead of page-flipping (works, but is presumably why any flicker
+  shows up - not yet characterized). Next up, in order the user asked
+  for: (1) input via evdev, (2) real page-flipping, (3) UI design work
+  (the user's own).
+  - `meerkat-compositor` fights back hard when you try to free the DRM
+    master for a manual test: stopping `weston-graphical-session.service`
+    (system) does NOT stop it - the actual compositor process is
+    supervised by a *separate* unit, `meerkat-session.service`, not
+    obviously named after weston/meerkat-compositor's own systemd unit
+    names (`weston.service`/`weston.socket`, which also exist and
+    respawn it independently via socket activation). Stopping/killing
+    any one or two of these three still gets it relaunched by whichever
+    you missed. The reliable sequence: `systemctl stop
+    meerkat-session.service && systemctl mask meerkat-session.service`
+    (root shell) - that alone was enough once found; the earlier
+    `weston.socket`/`weston.service` user-unit masking turned out to be
+    unnecessary but harmless. `grep -rl meerkat-compositor
+    /usr/lib/systemd/ /etc/systemd/` finds all of them if this changes.
 - `meta-meerkat` is a much bigger existing project than "a demo
   compositor": `recipes-graphics/wayland/files/` alone has ~20 patches
   building out a phone-like desktop-shell (app-window management, a

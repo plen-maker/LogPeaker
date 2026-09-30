@@ -145,6 +145,13 @@ pub fn run(mut app: crate::app::BenchpeekApp) -> anyhow::Result<()> {
 
     log::info!("DRM backend up: {width}x{height} on {:?}", con.interface());
 
+    let mut touch = crate::touch_input::TouchInput::open()
+        .context("opening touchscreen")?;
+    match &touch {
+        Some(_) => log::info!("touchscreen input active"),
+        None => log::warn!("no /dev/input/touchscreen0 - running without touch input"),
+    }
+
     // Keeps the currently scanned-out buffer's gbm reference alive; dropping
     // the previous one releases it back to the swap chain (see
     // `gbm::Surface::lock_front_buffer`'s docs - the release happens in
@@ -152,11 +159,15 @@ pub fn run(mut app: crate::app::BenchpeekApp) -> anyhow::Result<()> {
     let mut _scanned_out: Option<gbm::BufferObject<()>> = None;
 
     loop {
+        let screen_size = egui::vec2(width as f32, height as f32);
+        let mut events = Vec::new();
+        if let Some(touch) = &mut touch {
+            touch.poll(screen_size, &mut events);
+        }
+
         let raw_input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(width as f32, height as f32),
-            )),
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_size)),
+            events,
             ..Default::default()
         };
 

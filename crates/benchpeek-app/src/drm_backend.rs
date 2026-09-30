@@ -163,16 +163,43 @@ pub fn run(build_app: impl FnOnce(&egui::Context) -> Box<dyn eframe::App>) -> an
     // `BufferObject`'s `Drop`, not via an explicit call).
     let mut _scanned_out: Option<gbm::BufferObject<()>> = None;
     let mut crtc_configured = false;
+    let screen_size_px = egui::vec2(width as f32, height as f32);
+
+    // This panel has no OS-level DPI concept, so the native scale is just a
+    // fixed 1.0 - `apply_scale`-style logic (`ws::Workspace` scales its whole
+    // 1280x800 design down to fit here via `egui::Context::set_zoom_factor`)
+    // still works on top of it, adjusting `pixels_per_point` from there.
+    let mut viewports = egui::ViewportIdMap::default();
+    viewports.insert(
+        egui::ViewportId::ROOT,
+        egui::ViewportInfo {
+            native_pixels_per_point: Some(1.0),
+            ..Default::default()
+        },
+    );
 
     loop {
-        let screen_size = egui::vec2(width as f32, height as f32);
+        // `RawInput::screen_rect` must be in *points*, not physical pixels
+        // (see its doc comment) - dividing by the context's current
+        // pixels_per_point (which `ws::Workspace::apply_scale` changes via
+        // `set_zoom_factor` to fit its 1280x800 design onto this 1024x600
+        // panel) keeps that conversion correct every frame. Feeding the raw
+        // pixel size here instead compounds each frame (apply_scale reads it
+        // back out scaled by the *previous* frame's pixels_per_point), which
+        // spirals the zoom down to its floor within a few frames - confirmed
+        // on real hardware 2026-09-30 as the UI rendering tiny in a corner.
+        let ppp = egui_ctx.pixels_per_point();
+        let screen_size_pts = screen_size_px / ppp;
+
         let mut events = Vec::new();
         if let Some(touch) = &mut touch {
-            touch.poll(screen_size, &mut events);
+            touch.poll(screen_size_pts, &mut events);
         }
 
         let raw_input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_size)),
+            viewport_id: egui::ViewportId::ROOT,
+            viewports: viewports.clone(),
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_size_pts)),
             events,
             ..Default::default()
         };

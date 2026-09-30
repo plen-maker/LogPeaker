@@ -17,12 +17,17 @@
 # Needs rustup with Rust >= 1.95 (the dependency tree requires it; scarthgap
 # ships 1.75, so the Yocto Rust cannot build this).
 #
-# benchpeek-app's Cargo.toml pins eframe to the glow (GLES) backend, not wgpu:
-# the STM32MP257F-DK's gcnano GPU only ships an EGL/GLES vendor driver, no
-# usable Vulkan ICD, and eframe's default wgpu backend segfaults on it
-# (SEGV_MAPERR, null deref, before any app code runs - confirmed on real
-# hardware 2026-09-25). No extra cargo feature flags are needed here because
-# of that Cargo.toml pin; a plain `cargo build` already gets glow.
+# benchpeek-app's Cargo.toml defaults eframe to wgpu (fine for desktop) with
+# a `glow` feature to opt into the GLES backend instead - build with that
+# feature for this board: its gcnano GPU only ships an EGL/GLES vendor
+# driver, no usable Vulkan ICD, and eframe's wgpu backend segfaults on it as
+# a Wayland client (SEGV_MAPERR, null deref, before any app code runs -
+# confirmed on real hardware 2026-09-25). This mostly doesn't matter for
+# BENCHPEEK_DRM=1 runs specifically - drm_backend.rs always drives glow
+# directly and never calls eframe::run_native/wgpu at all - but build with
+# glow anyway, both to keep `benchpeek` (no BENCHPEEK_DRM) usable as a
+# fallback and to avoid cross-compiling wgpu's own dependency tree for a
+# target that will never use it.
 set -euo pipefail
 
 TARGET=aarch64-unknown-linux-gnu
@@ -69,7 +74,7 @@ for lib in wayland-client xkbcommon egl glesv2; do
     pkg-config --exists "$lib" || echo "note: $lib.pc is not in the sysroot - fine, it is loaded at runtime" >&2
 done
 
-cargo build --release -p benchpeek-app --target "$TARGET"
+cargo build --release -p benchpeek-app --target "$TARGET" --no-default-features --features glow
 
 BIN="target/$TARGET/release/benchpeek"
 file "$BIN" 2>/dev/null || true

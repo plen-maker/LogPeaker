@@ -216,8 +216,20 @@ before any `bitbake`). Flashable images land in
   - **Touch input confirmed working 2026-09-30**: `touch_input.rs`
     (evdev on `/dev/input/touchscreen0`, the ILI210x) logs "touchscreen
     input active" and the user confirmed on-screen response to taps.
-  - Still open: the render loop is unthrottled (re-sets the CRTC every
-    frame, no vblank pacing) - real page-flipping is next.
+  - **Page-flipping confirmed working 2026-09-30 too**: `set_crtc` now
+    only runs once (first frame); every frame after that is a real
+    `page_flip` + blocking `receive_events()` wait, pacing the loop to
+    the display's refresh rate instead of spinning unthrottled. User
+    confirmed no flicker/tearing regression versus the earlier
+    set_crtc-every-frame version (which also looked fine - this was a
+    correctness/efficiency fix, not chasing a visible bug).
+  - **All three of the DRM backend's v0 goals are done**: render, touch
+    input, page-flip. `BENCHPEEK_DRM=1 /usr/bin/benchpeek` (as root,
+    with meerkat-session/psplash-drm/seatd-weston stopped per above) is
+    a real, working alternative to running under meerkat-compositor's
+    Wayland session, with the crashing vendor-driver code path avoided
+    entirely. Next: UI design work, which is the user's own - see
+    "Working with this user" at the top of this file.
 - `meta-meerkat` is a much bigger existing project than "a demo
   compositor": `recipes-graphics/wayland/files/` alone has ~20 patches
   building out a phone-like desktop-shell (app-window management, a

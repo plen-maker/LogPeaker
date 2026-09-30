@@ -10,6 +10,19 @@ The README and `docs/plugin-sdk.md` cover the features themselves.
 - Often away: keep going on clearly established work, but ask before pushing
   anything new, rewriting history, or touching git config.
 
+## UI direction (in progress, 2026-09-30)
+
+The user's own "Workspace UI" (`src/ws/`, previously only on
+`origin/mono-workspace-ui` and demo-data-only per this file's old notes) is
+now the **default** front end on `main` - `cargo run -p benchpeek-app` opens
+it; `--classic` still runs the old `app::BenchpeekApp` tab cockpit. Brought
+in selectively (not merged - see the commit that did this for why), so it's
+still at its original 1280x800 design grid, not yet adapted to the board's
+actual 1024x600 touchscreen. See `docs/CLAUDE_UI_BRIEF.hu.md` (Hungarian) for
+the user's own brief on that adaptation - read it before proposing layout
+changes; the visual direction is explicitly the user's to lead, not a design
+to hand over finished.
+
 ## Commands
 - Run: `cargo run -p benchpeek-app`
 - `cargo test` needs prebuilt WASM plugins first:

@@ -199,6 +199,25 @@ before any `bitbake`). Flashable images land in
     `weston.socket`/`weston.service` user-unit masking turned out to be
     unnecessary but harmless. `grep -rl meerkat-compositor
     /usr/lib/systemd/ /etc/systemd/` finds all of them if this changes.
+  - After masking `meerkat-session.service` and rebooting, a *different*
+    process can end up holding the DRM master instead: `psplash-drm`
+    (`psplash-drm-start.service`, boot splash screen), which normally
+    gets told to quit (`echo QUIT > /tmp/splash_fifo`) once the real
+    graphical session is ready - but nothing does that anymore once
+    meerkat-session is masked, so it just sits there holding
+    `/dev/dri/card0`. `acquire_master_lock` fails with EBUSY either way,
+    so if stopping/masking the meerkat units doesn't clear it, check
+    `fuser /dev/dri/card0` (or `for p in /proc/[0-9]*; do ls $p/fd
+    2>/dev/null | grep -q card0 && cat $p/comm; done` - no `lsof` on this
+    image) before assuming it's meerkat again; `kill -9` on psplash-drm's
+    pid works fine for a one-off test even though it skips the fifo.
+    `seatd-weston.service` can also be in the way and may need
+    `systemctl stop` too.
+  - **Touch input confirmed working 2026-09-30**: `touch_input.rs`
+    (evdev on `/dev/input/touchscreen0`, the ILI210x) logs "touchscreen
+    input active" and the user confirmed on-screen response to taps.
+  - Still open: the render loop is unthrottled (re-sets the CRTC every
+    frame, no vblank pacing) - real page-flipping is next.
 - `meta-meerkat` is a much bigger existing project than "a demo
   compositor": `recipes-graphics/wayland/files/` alone has ~20 patches
   building out a phone-like desktop-shell (app-window management, a

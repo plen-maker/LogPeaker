@@ -25,7 +25,7 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context as _};
-use drm::control::{connector, crtc, Device as ControlDevice, Mode};
+use drm::control::{self, connector, crtc, Device as ControlDevice, Mode};
 use drm::Device as BasicDevice;
 use eframe::App as _;
 use gbm::{AsRaw, BufferObjectFlags, Format};
@@ -157,6 +157,7 @@ pub fn run(mut app: crate::app::BenchpeekApp) -> anyhow::Result<()> {
     // `gbm::Surface::lock_front_buffer`'s docs - the release happens in
     // `BufferObject`'s `Drop`, not via an explicit call).
     let mut _scanned_out: Option<gbm::BufferObject<()>> = None;
+    let mut crtc_configured = false;
 
     loop {
         let screen_size = egui::vec2(width as f32, height as f32);
@@ -200,12 +201,24 @@ pub fn run(mut app: crate::app::BenchpeekApp) -> anyhow::Result<()> {
             .map_err(|e| anyhow!("lock_front_buffer: {e}"))?;
         let fb = gbm.add_framebuffer(&bo, 24, 32).context("add_framebuffer")?;
 
-        // v0 re-sets the CRTC every frame instead of page-flipping: simpler,
-        // no vblank-event bookkeeping, at the cost of possible tearing/a
-        // brief flash per frame. Fine for proving the pipeline; swap for a
-        // real `page_flip` + event wait once this is confirmed working.
-        gbm.set_crtc(crtc.handle(), Some(fb), (0, 0), &[con.handle()], Some(mode))
-            .context("set_crtc")?;
+        if crtc_configured {
+            // Queue the flip and block until the DRM event says it actually
+            // happened (at the next vblank) - this is what paces the loop to
+            // the display's refresh rate instead of spinning unthrottled.
+            gbm.page_flip(crtc.handle(), fb, control::PageFlipFlags::EVENT, None)
+                .context("page_flip")?;
+            for event in gbm.receive_events().context("receive_events")? {
+                if let control::Event::PageFlip(_) = event {
+                    break;
+                }
+            }
+        } else {
+            // First frame only: page_flip needs a CRTC already showing a
+            // framebuffer to flip *from*, so this has to be set_crtc once.
+            gbm.set_crtc(crtc.handle(), Some(fb), (0, 0), &[con.handle()], Some(mode))
+                .context("set_crtc")?;
+            crtc_configured = true;
+        }
 
         _scanned_out = Some(bo);
     }

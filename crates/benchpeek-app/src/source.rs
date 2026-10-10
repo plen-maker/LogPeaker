@@ -675,6 +675,53 @@ mod tests {
         );
     }
 
+    /// Exercises the real SocketCAN path end to end: opens the same
+    /// `spawn(SourceKind::Can{..}, ..)` the app uses against a vcan0
+    /// interface, writes one real frame onto it with its own, independent
+    /// socket, and checks the frame comes back out the other end as a
+    /// decoded `Sample` - not just that `can_frame_line`'s string
+    /// formatting is right (see the test above), but that opening the
+    /// socket, reading a real frame off it, and feeding it through a
+    /// `Decoder` all actually works. Ignored by default: needs a vcan0
+    /// interface, which isn't present unless set up first:
+    /// `sudo modprobe vcan && sudo ip link add vcan0 type vcan && sudo ip link set up vcan0`.
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "requires a vcan0 interface - see the doc comment; run explicitly with `cargo test -p benchpeek-app -- --ignored can_source_decodes_a_real_vcan_frame`"]
+    fn can_source_decodes_a_real_vcan_frame() {
+        use socketcan::{CanDataFrame, Id, StandardId};
+
+        let mut handle = spawn(
+            SourceKind::Can {
+                interface: "vcan0".to_string(),
+            },
+            Box::new(can_raw::CanRaw::new()),
+        );
+        // Give can_session a moment to open the socket before we send -
+        // frames sent before the reader is listening would just be missed,
+        // same as on a real bus.
+        thread::sleep(Duration::from_millis(200));
+
+        let sender = CanSocket::open("vcan0")
+            .expect("open vcan0 to send a test frame - is it up? (ip link set up vcan0)");
+        let id = Id::Standard(StandardId::new(0x301).unwrap());
+        let frame = CanDataFrame::new(id, &[0x12, 0x34]).expect("build a 2-byte CAN data frame");
+        sender
+            .write_frame(&frame)
+            .expect("send the test frame on vcan0");
+
+        let sample = handle
+            .rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("no sample decoded from the vcan0 frame - can_session didn't read it back");
+        handle.stop();
+
+        // can-raw packs data bytes little-endian into one number: 0x12
+        // then 0x34 -> 0x3412. Signal name is `can_<id in uppercase hex>`.
+        assert_eq!(sample.signal, "can_301");
+        assert_eq!(sample.value, 0x3412 as f64);
+    }
+
     #[test]
     fn stop_is_prompt_during_reconnect_backoff() {
         let mut watcher = spawn_log_watch(

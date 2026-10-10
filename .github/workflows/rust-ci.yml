@@ -1,0 +1,53 @@
+name: Rust CI
+
+on:
+  push:
+    branches:
+      - "automation/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-and-test:
+    name: Check and targeted tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            pkg-config \
+            libudev-dev \
+            libusb-1.0-0-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libegl1-mesa-dev \
+            libgles2-mesa-dev \
+            libdrm-dev \
+            libgbm-dev
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check application
+        run: cargo check -p benchpeek-app
+
+      - name: Run Workspace UI tests
+        run: cargo test -p benchpeek-app ws::

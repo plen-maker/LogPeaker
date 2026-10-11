@@ -379,7 +379,7 @@ impl Workspace {
         let dim = ((1.0 - self.brightness) * 0.6 * 255.0) as u8;
         if dim > 0 {
             ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("dim")))
-                .rect_filled(full, 0.0, Color32::from_black_alpha(dim));
+                .rect_filled(avail, 0.0, Color32::from_black_alpha(dim));
         }
 
         self.screenshot_harness(&ctx, now);

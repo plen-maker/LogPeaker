@@ -165,6 +165,14 @@ pub fn run(build_app: impl FnOnce(&egui::Context) -> Box<dyn eframe::App>) -> an
     let mut crtc_configured = false;
     let screen_size_px = egui::vec2(width as f32, height as f32);
 
+    // Debug aid only: BENCHPEEK_DRM_SHOT=<path> dumps one raw PPM screenshot
+    // of the actual rendered output after a short settle delay, since ctx
+    // .send_viewport_cmd(ViewportCommand::Screenshot(..)) (ws::Workspace's
+    // normal screenshot_harness) relies on eframe's own windowing backend
+    // and is never processed by this hand-rolled DRM loop.
+    let drm_shot_path = std::env::var_os("BENCHPEEK_DRM_SHOT").map(std::path::PathBuf::from);
+    let mut frame_idx: u64 = 0;
+
     // This panel has no OS-level DPI concept, so the native scale is just a
     // fixed 1.0 - `apply_scale`-style logic (`ws::Workspace` scales its whole
     // 1280x800 design down to fit here via `egui::Context::set_zoom_factor`)
@@ -213,7 +221,12 @@ pub fn run(build_app: impl FnOnce(&egui::Context) -> Box<dyn eframe::App>) -> an
             egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
 
         unsafe {
-            gl.clear_color(0.0, 0.0, 0.0, 1.0);
+            // Matches ws::theme::BG (0x09, 0x0B, 0x0C), not pure black: any
+            // sliver the UI's own fills don't quite reach (e.g. a rounding
+            // gap in the pillarboxing when the panel's aspect ratio doesn't
+            // match the 1280x800 design) should blend into the background
+            // instead of showing up as a visibly distinct dark stripe.
+            gl.clear_color(0.035, 0.043, 0.047, 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT);
         }
         painter.paint_and_update_textures(
@@ -222,6 +235,40 @@ pub fn run(build_app: impl FnOnce(&egui::Context) -> Box<dyn eframe::App>) -> an
             &clipped_primitives,
             &mut full_output.textures_delta,
         );
+
+        frame_idx += 1;
+        if let Some(path) = &drm_shot_path {
+            if frame_idx == 90 {
+                let (w, h) = (width as i32, height as i32);
+                let mut buf = vec![0u8; (w * h * 4) as usize];
+                unsafe {
+                    gl.read_pixels(
+                        0,
+                        0,
+                        w,
+                        h,
+                        glow::RGBA,
+                        glow::UNSIGNED_BYTE,
+                        glow::PixelPackData::Slice(Some(&mut buf)),
+                    );
+                }
+                // glReadPixels origin is bottom-left; flip rows for a normal
+                // top-left-origin image, and drop the alpha channel for PPM.
+                let mut out = Vec::with_capacity(format!("P6\n{w} {h}\n255\n").len() + (w * h * 3) as usize);
+                out.extend_from_slice(format!("P6\n{w} {h}\n255\n").as_bytes());
+                for row in (0..h).rev() {
+                    let start = (row * w * 4) as usize;
+                    for px in buf[start..start + (w * 4) as usize].chunks_exact(4) {
+                        out.extend_from_slice(&px[..3]);
+                    }
+                }
+                if let Err(e) = std::fs::write(path, &out) {
+                    log::warn!("BENCHPEEK_DRM_SHOT write failed: {e}");
+                } else {
+                    log::info!("BENCHPEEK_DRM_SHOT written to {}", path.display());
+                }
+            }
+        }
 
         gl_surface
             .swap_buffers(&gl_context)

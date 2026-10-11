@@ -338,12 +338,13 @@ impl Workspace {
         }
         self.handle_keys(&ctx, now);
 
-        // The whole UI lives on a fixed 1280x800 design rectangle, centred in
-        // the window (bars appear only when the window is not 16:10).
+        // Scaled to fit 1280x800, but on a wider-than-16:10 screen (the
+        // board's 1024x600 panel) the layout takes the full width instead of
+        // leaving empty bars at the sides; only a taller window letterboxes.
         let avail = ui.max_rect();
         let full = Rect::from_center_size(
             avail.center(),
-            Vec2::new(DESIGN_W.min(avail.width()), DESIGN_H.min(avail.height())),
+            Vec2::new(avail.width(), DESIGN_H.min(avail.height())),
         );
         self.shot.design = full;
         let painter = ui.painter().clone();

@@ -20,6 +20,11 @@ in selectively (not merged - see the commit that did this for why). It's
 still at its original 1280x800 design grid (`ws::DESIGN_W/DESIGN_H`), scaled
 down to whatever window/screen it actually gets via `apply_scale()` +
 `egui::Context::set_zoom_factor` - not yet a from-scratch 1024x600 layout.
+Scale fits the 800 design height; on a screen wider than 16:10 (the panel:
+1024x600 → 1365x800 points) the layout rect `full` takes the whole width
+instead of pillarboxing to 1280 (user-confirmed on the board 2026-10-11).
+Everything in `ws::` positions relative to `full`/`page_rect`, so pages just
+get wider; only a taller-than-16:10 window still letterboxes.
 
 **Confirmed correctly filling the board's actual 1024x600 screen
 2026-09-30**, via `BENCHPEEK_DRM=1`. Getting there needed a
